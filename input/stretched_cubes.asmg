@@ -5,7 +5,7 @@ Problem_type   IGA-DG
 PolyOrder      2
 Refinement     1
 Materials      1
-Groups         7
+Groups         6
 !
 1D_Patches: 0
 2D_Patches: 6
