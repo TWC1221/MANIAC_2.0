@@ -1,15 +1,15 @@
 ! IGA-specific derived types.
 !
-! t_patch_iga    -- NURBS volume patch (holds knot vectors + CP connectivity)
-! t_surface_iga  -- NURBS boundary entity (surface in 3D, edge in 2D)
-! t_mesh_iga     -- full IGA/FEM mesh: geometry and element topology only
-! t_finite_iga   -- basis descriptor: orders, n_basis, face node map
-! t_transport_iga-- transport-specific precomputed data (separate from mesh)
+! t_patch_iga   -- NURBS volume patch (holds knot vectors + CP connectivity)
+! t_surface_iga -- NURBS boundary entity (surface in 3D, edge in 2D)
+! t_mesh_iga    -- IGA mesh extending t_mesh with NURBS-specific fields
+! t_finite_iga  -- basis descriptor: orders, n_basis, face node map
 !
-! Keeping mesh and transport data separate means the same mesh object
-! works for both diffusion (no transport data needed) and transport.
+! Transport precomputed data lives in t_transport_data (m_types) so it is
+! shared across IGA and FEM without duplication.
 module m_types_iga
     use m_constants
+    use m_types
     implicit none
     public
 
@@ -43,27 +43,19 @@ module m_types_iga
     end type t_surface_iga
 
     ! ------------------------------------------------------------------
-    ! Full IGA (or FEM-via-ASMG) mesh.
-    ! Contains geometry and element topology only — no solver-specific
-    ! precomputed arrays.  Transport precomputed data lives in t_transport_iga.
+    ! IGA mesh, extending the common t_mesh base with NURBS-specific
+    ! fields.  Common fields (dim, n_nodes, nodes, elems, etc.) are
+    ! inherited from t_mesh.  iga_surfaces holds full knot + element
+    ! data for boundary entities; base mesh%surfaces holds just cp_ids
+    ! and bc_id (sufficient for transport BC lookup).
     ! ------------------------------------------------------------------
-    type t_mesh_iga
-        integer :: dim               ! 2 or 3
-        integer :: n_groups          ! energy groups (from ASMG header)
-        integer :: n_nodes           ! total control points / nodes
-        integer :: order             ! global polynomial order
-        integer :: n_faces_per_elem  ! 4 (2D) or 6 (3D)
-        integer :: n_elems
-
-        real(dp), allocatable :: nodes(:,:)    ! (n_nodes, 3)
+    type, extends(t_mesh) :: t_mesh_iga
         real(dp), allocatable :: weights(:)    ! (n_nodes) NURBS weights
 
         type(t_patch_iga),   allocatable :: patches(:)
-        type(t_surface_iga), allocatable :: surfaces(:)
+        type(t_surface_iga), allocatable :: iga_surfaces(:)
 
         ! Element topology — one entry per non-zero-measure knot span
-        integer, allocatable :: elems(:,:)             ! (n_elems, n_basis)
-        integer, allocatable :: material_ids(:)
         integer, allocatable :: elem_patch_id(:)
         integer, allocatable :: elem_span_indices(:,:) ! (dim, n_elems)
 
@@ -89,32 +81,5 @@ module m_types_iga
         integer :: n_nodes_per_face
         integer, allocatable :: face_node_map(:,:)  ! (n_nodes_per_face, n_faces_per_elem)
     end type t_finite_iga
-
-    ! ------------------------------------------------------------------
-    ! Transport-specific precomputed data for an IGA mesh.
-    ! Populated by InitialiseGeometry (connectivity/normals) and
-    ! InitialiseTransport (integrals, reflective map, LU factors).
-    ! ------------------------------------------------------------------
-    type t_transport_iga
-        ! Face topology and outward normals (from InitialiseGeometry)
-        integer,  allocatable :: face_connectivity(:,:,:) ! (4, n_faces, n_elems)
-        real(dp), allocatable :: face_normals(:,:,:)      ! (3, n_faces, n_elems)
-        integer,  allocatable :: upwind_idx(:,:,:)        ! (n_nodes_per_face, n_faces, n_elems)
-        integer,  allocatable :: reflect_map(:,:,:)       ! (n_angles, n_faces, n_elems)
-
-        ! Volume and face integrals (from InitialiseTransport)
-        real(dp), allocatable :: elem_mass_matrix(:,:,:)  ! (n_basis, n_basis, n_elems)
-        real(dp), allocatable :: elem_stiffness_x(:,:,:)
-        real(dp), allocatable :: elem_stiffness_y(:,:,:)
-        real(dp), allocatable :: elem_stiffness_z(:,:,:)
-        real(dp), allocatable :: face_mass_x(:,:,:,:)     ! (n_basis, n_basis, n_faces, n_elems)
-        real(dp), allocatable :: face_mass_y(:,:,:,:)
-        real(dp), allocatable :: face_mass_z(:,:,:,:)
-        real(dp), allocatable :: basis_integrals_vol(:,:) ! (n_basis, n_elems)
-
-        ! Per-element-per-angle LU factors (from InitialiseTransport)
-        real(dp), allocatable :: local_lu(:,:,:,:,:)      ! (n_basis, n_basis, n_elems, n_angles, n_groups)
-        integer,  allocatable :: local_pivots(:,:,:,:)    ! (n_basis, n_elems, n_angles, n_groups)
-    end type t_transport_iga
 
 end module m_types_iga

@@ -1,7 +1,7 @@
 ! Transport sweep-order and geometry initialisation for IGA meshes.
 ! Builds element-to-element connectivity, outward face normals, upwind
 ! index tables, and angle-dependent sweep orderings.
-! All output populates t_transport_iga (TD), not the mesh itself.
+! All output populates t_transport_data (TD), not the mesh itself.
 ! Supports 2D (quad, 4 faces) and 3D (hex, 6 faces).
 !
 ! Public:
@@ -16,6 +16,8 @@ module m_sweep_order
     implicit none
     private
     public :: InitialiseGeometry, connectivity_and_normals
+    public :: generate_sweep_order, precompute_reflective_map, precompute_upwind_indices
+    public :: all_nodes_in_list
 
 contains
 
@@ -24,20 +26,23 @@ contains
         type(t_finite_iga),    intent(in)    :: FE
         type(t_sn_quadrature), intent(in)    :: QuadSn
         type(t_quadrature),    intent(in)    :: QuadFace
-        type(t_transport_iga), intent(inout) :: TD
+        type(t_transport_data), intent(inout) :: TD
         integer, allocatable,  intent(out)   :: sweep_order(:,:)
 
         integer :: mm
         real(dp) :: dir_tmp(3)
 
         call connectivity_and_normals(mesh, FE, QuadFace, TD)
-        call print_connectivity_summary(mesh, TD)
-        call precompute_upwind_indices(mesh, FE, TD)
+        call precompute_upwind_indices(mesh%n_elems, mesh%n_faces_per_elem, &
+                                       FE%n_nodes_per_face, FE%n_basis, &
+                                       FE%face_node_map, TD%face_connectivity, TD%upwind_idx)
 
         allocate(sweep_order(mesh%n_elems, QuadSn%n_angles))
         do mm = 1, QuadSn%n_angles
             dir_tmp = QuadSn%dirs(mm, :)
-            call generate_sweep_order(mesh, TD, dir_tmp, sweep_order(:, mm))
+            call generate_sweep_order(mesh%n_elems, mesh%n_faces_per_elem, &
+                                      TD%face_normals, TD%face_connectivity, &
+                                      dir_tmp, sweep_order(:, mm))
         end do
     end subroutine InitialiseGeometry
 
@@ -45,7 +50,7 @@ contains
         type(t_mesh_iga),      intent(in)    :: mesh
         type(t_finite_iga),    intent(in)    :: FE
         type(t_quadrature),    intent(in)    :: QuadFace
-        type(t_transport_iga), intent(inout) :: TD
+        type(t_transport_data), intent(inout) :: TD
 
         integer  :: ee, e1, e2, f, f1, f2, q, s_idx, u, v, w, nid, k_iter, n_pts, p, orient_val
         real(dp) :: nodes(FE%n_basis, 3)
@@ -265,15 +270,15 @@ contains
             end do
         end do
 
-        ! Assign boundary BC from surfaces
+        ! Assign boundary BC from iga_surfaces
         do e1 = 1, mesh%n_elems
             do f1 = 1, nf
                 if (TD%face_connectivity(1,f1,e1) == -1) then
                     found_neighbor = .false.
-                    do s_idx = 1, size(mesh%surfaces)
+                    do s_idx = 1, size(mesh%iga_surfaces)
                         if (all_nodes_in_list(mesh%elems(e1, FE%face_node_map(:,f1)), &
-                                              mesh%surfaces(s_idx)%cp_ids)) then
-                            TD%face_connectivity(4,f1,e1) = mesh%surfaces(s_idx)%bc_id
+                                              mesh%iga_surfaces(s_idx)%cp_ids)) then
+                            TD%face_connectivity(4,f1,e1) = mesh%iga_surfaces(s_idx)%bc_id
                             found_neighbor = .true.
                             exit
                         end if
@@ -284,73 +289,57 @@ contains
         end do
     end subroutine connectivity_and_normals
 
-    subroutine print_connectivity_summary(mesh, TD)
-        type(t_mesh_iga),      intent(in) :: mesh
-        type(t_transport_iga), intent(in) :: TD
-        integer :: ee, f, n_int, n_ext
-        n_int = 0; n_ext = 0
-        do ee = 1, mesh%n_elems
-            do f = 1, mesh%n_faces_per_elem
-                if (TD%face_connectivity(1,f,ee) > 0) then
-                    n_int = n_int + 1
-                else
-                    n_ext = n_ext + 1
-                end if
-            end do
-        end do
-        write(*,'(A)') "-------------------------------------------------------"
-        write(*,'(A,I10)') "  Total Faces:       ", mesh%n_elems * mesh%n_faces_per_elem
-        write(*,'(A,I10)') "  Internal (Shared): ", n_int
-        write(*,'(A,I10)') "  External (BC):     ", n_ext
-        write(*,'(A)') "-------------------------------------------------------"
-    end subroutine print_connectivity_summary
-
-    subroutine precompute_upwind_indices(mesh, FE, TD)
-        type(t_mesh_iga),      intent(in)    :: mesh
-        type(t_finite_iga),    intent(in)    :: FE
-        type(t_transport_iga), intent(inout) :: TD
+    subroutine precompute_upwind_indices(n_elems, n_faces_per_elem, n_nodes_per_face, n_basis, &
+                                         face_node_map, face_connectivity, upwind_idx)
+        integer, intent(in)                       :: n_elems, n_faces_per_elem
+        integer, intent(in)                       :: n_nodes_per_face, n_basis
+        integer, intent(in)                       :: face_node_map(:,:)
+        integer, intent(in)                       :: face_connectivity(:,:,:)
+        integer, allocatable, intent(out)         :: upwind_idx(:,:,:)
 
         integer :: ee, f, j_f, j_nf, nid, n_fac, orient
 
-        allocate(TD%upwind_idx(FE%n_nodes_per_face, mesh%n_faces_per_elem, mesh%n_elems))
-        TD%upwind_idx = 0
+        allocate(upwind_idx(n_nodes_per_face, n_faces_per_elem, n_elems))
+        upwind_idx = 0
 
-        do ee = 1, mesh%n_elems
-            do f = 1, mesh%n_faces_per_elem
-                nid    = TD%face_connectivity(1, f, ee)
+        do ee = 1, n_elems
+            do f = 1, n_faces_per_elem
+                nid = face_connectivity(1, f, ee)
                 if (nid > 0) then
-                    n_fac  = TD%face_connectivity(2, f, ee)
-                    orient = TD%face_connectivity(3, f, ee)
-                    do j_f = 1, FE%n_nodes_per_face
-                        j_nf = merge(FE%n_nodes_per_face - j_f + 1, j_f, orient /= 1)
-                        TD%upwind_idx(j_f,f,ee) = (nid-1)*FE%n_basis + FE%face_node_map(j_nf, n_fac)
+                    n_fac  = face_connectivity(2, f, ee)
+                    orient = face_connectivity(3, f, ee)
+                    do j_f = 1, n_nodes_per_face
+                        j_nf = merge(n_nodes_per_face - j_f + 1, j_f, orient /= 1)
+                        upwind_idx(j_f,f,ee) = (nid-1)*n_basis + face_node_map(j_nf, n_fac)
                     end do
                 else
-                    do j_f = 1, FE%n_nodes_per_face
-                        TD%upwind_idx(j_f,f,ee) = (ee-1)*FE%n_basis + FE%face_node_map(j_f, f)
+                    do j_f = 1, n_nodes_per_face
+                        upwind_idx(j_f,f,ee) = (ee-1)*n_basis + face_node_map(j_f, f)
                     end do
                 end if
             end do
         end do
     end subroutine precompute_upwind_indices
 
-    subroutine generate_sweep_order(mesh, TD, direction, sweep_order)
-        type(t_mesh_iga),      intent(in)            :: mesh
-        type(t_transport_iga), intent(in)            :: TD
-        real(dp),              intent(in)            :: direction(3)
-        integer, contiguous,   intent(out)           :: sweep_order(:)
+    subroutine generate_sweep_order(n_elems, n_faces_per_elem, face_normals, &
+                                    face_connectivity, direction, sweep_order)
+        integer,             intent(in)            :: n_elems, n_faces_per_elem
+        real(dp),            intent(in)            :: face_normals(:,:,:)
+        integer,             intent(in)            :: face_connectivity(:,:,:)
+        real(dp),            intent(in)            :: direction(3)
+        integer, contiguous, intent(out)           :: sweep_order(:)
 
         integer :: e1, e2, f1, nid
         integer, allocatable :: queue(:), incoming(:)
         integer :: head, tail, sweep_idx, level_end
 
-        allocate(queue(mesh%n_elems), incoming(mesh%n_elems))
+        allocate(queue(n_elems), incoming(n_elems))
         incoming = 0; head = 1; tail = 0
 
-        do e1 = 1, mesh%n_elems
-            do f1 = 1, mesh%n_faces_per_elem
-                if (dot_product(TD%face_normals(:,f1,e1), direction) < -1e-12_dp) then
-                    if (TD%face_connectivity(1,f1,e1) > 0) incoming(e1) = incoming(e1) + 1
+        do e1 = 1, n_elems
+            do f1 = 1, n_faces_per_elem
+                if (dot_product(face_normals(:,f1,e1), direction) < -1e-12_dp) then
+                    if (face_connectivity(1,f1,e1) > 0) incoming(e1) = incoming(e1) + 1
                 end if
             end do
             if (incoming(e1) == 0) then
@@ -363,9 +352,9 @@ contains
             do while (head <= level_end)
                 e1 = queue(head); head = head + 1
                 sweep_idx = sweep_idx + 1; sweep_order(sweep_idx) = e1
-                do f1 = 1, mesh%n_faces_per_elem
-                    if (dot_product(TD%face_normals(:,f1,e1), direction) > 1e-12_dp) then
-                        e2 = TD%face_connectivity(1,f1,e1)
+                do f1 = 1, n_faces_per_elem
+                    if (dot_product(face_normals(:,f1,e1), direction) > 1e-12_dp) then
+                        e2 = face_connectivity(1,f1,e1)
                         if (e2 > 0) then
                             incoming(e2) = incoming(e2) - 1
                             if (incoming(e2) == 0) then
@@ -378,14 +367,14 @@ contains
             level_end = tail
         end do
 
-        if (sweep_idx /= mesh%n_elems) then
-            write(*,'(A,I0,A,I0)') "Sweep Error: processed ", sweep_idx, " / ", mesh%n_elems
-            do e1 = 1, mesh%n_elems
+        if (sweep_idx /= n_elems) then
+            write(*,'(A,I0,A,I0)') "Sweep Error: processed ", sweep_idx, " / ", n_elems
+            do e1 = 1, n_elems
                 if (incoming(e1) > 0) then
                     write(*,'(A,I0,A,I0,A)') "Element ", e1, " stalled (waiting ", incoming(e1), ")"
-                    do f1 = 1, mesh%n_faces_per_elem
-                        if (dot_product(TD%face_normals(:,f1,e1), direction) < -1e-12_dp) then
-                            nid = TD%face_connectivity(1,f1,e1)
+                    do f1 = 1, n_faces_per_elem
+                        if (dot_product(face_normals(:,f1,e1), direction) < -1e-12_dp) then
+                            nid = face_connectivity(1,f1,e1)
                             if (nid > 0) write(*,'(A,2I5)') "  face -> elem", f1, nid
                         end if
                     end do
@@ -395,6 +384,40 @@ contains
         end if
         deallocate(queue, incoming)
     end subroutine generate_sweep_order
+
+    subroutine precompute_reflective_map(n_elems, n_faces_per_elem, sn_quad, face_normals, reflect_map)
+        integer,               intent(in)    :: n_elems, n_faces_per_elem
+        type(t_sn_quadrature), intent(in)    :: sn_quad
+        real(dp),              intent(in)    :: face_normals(:,:,:)
+        integer, allocatable,  intent(out)   :: reflect_map(:,:,:)
+
+        integer :: ee, f, mm, m_iter
+        real(dp) :: normal(3), dir(3), ref_dir(3), max_dot, dprod
+
+        allocate(reflect_map(sn_quad%n_angles, n_faces_per_elem, n_elems))
+        reflect_map = 0
+
+        !$OMP PARALLEL DO PRIVATE(ee, f, normal, mm, dir, ref_dir, max_dot, m_iter, dprod)
+        do ee = 1, n_elems
+            do f = 1, n_faces_per_elem
+                normal = face_normals(:,f,ee)
+                do mm = 1, sn_quad%n_angles
+                    dir = sn_quad%dirs(mm, :)
+                    ref_dir = dir - 2.0_dp * dot_product(dir, normal) * normal
+                    max_dot = -2.0_dp
+                    do m_iter = 1, sn_quad%n_angles
+                        if (abs(ref_dir(3) - sn_quad%dirs(m_iter,3)) > SMALL_NUMBER) cycle
+                        dprod = dot_product(ref_dir, sn_quad%dirs(m_iter,:))
+                        if (dprod > max_dot) then
+                            max_dot = dprod
+                            reflect_map(mm,f,ee) = m_iter
+                        end if
+                    end do
+                end do
+            end do
+        end do
+        !$OMP END PARALLEL DO
+    end subroutine precompute_reflective_map
 
     integer function face_orient_from_nodes(mesh, FE, e1, f1, e2, f2) result(orient)
         type(t_mesh_iga),   intent(in) :: mesh

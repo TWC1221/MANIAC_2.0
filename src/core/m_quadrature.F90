@@ -404,7 +404,7 @@ contains
 
         m0 = sum(QuadSn%weights)
         m2 = sum(QuadSn%weights * QuadSn%dirs(:,1)**2)
-        write(*,'(A,I2,A,F10.8,A,F10.8)') " S", sn_order, " Verification: M0=", m0, "  M2*3=", m2*3.0_dp
+        !write(*,'(A,I2,A,F10.8,A,F10.8)') " S", sn_order, " Verification: M0=", m0, "  M2*3=", m2*3.0_dp
 
     contains
         subroutine swap(a, b)

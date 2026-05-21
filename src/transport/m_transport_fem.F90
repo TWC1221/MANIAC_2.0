@@ -1,29 +1,29 @@
-! IGA discrete-ordinates (SN) transport solver.
-! Implements a DG sweep over an IGA mesh with precomputed LU factors.
+! FEM discrete-ordinates (SN) transport solver.
+! Implements a DG sweep over a Lagrange-FEM mesh with precomputed LU factors.
 ! Angular flux lives on a per-element DG DOF layout: index = (ee-1)*n_basis + local.
 !
 ! Public:
-!   SolveTransport                   -- high-level entry: initialise state + power iteration
-!   Transport_Sweep                  -- angle sweep over all elements and groups
-!   Source_DGFEM                     -- build total source (scatter + fission)
-!   Calculate_Total_Production_DGFEM -- scalar production integral for k-eff
-module m_transport_iga
+!   SolveTransport_FEM                   -- high-level entry: initialise state + power iteration
+!   Transport_Sweep_FEM                  -- angle sweep over all elements and groups
+!   Source_DGFEM_FEM                     -- build total source (scatter + fission)
+!   Calculate_Total_Production_DGFEM_FEM -- scalar production integral for k-eff
+module m_transport_fem
     use m_constants
     use m_types
-    use m_types_iga
+    use m_types_fem
     use m_quadrature
     use m_material
     use m_power_iteration, only: PowerIteration
     implicit none
-    public :: SolveTransport
-    public :: Transport_Sweep, Source_DGFEM, Calculate_Total_Production_DGFEM
+    public :: SolveTransport_FEM
+    public :: Transport_Sweep_FEM, Source_DGFEM_FEM, Calculate_Total_Production_DGFEM_FEM
 
     ! ------------------------------------------------------------------
-    ! Module-level saved state — set by SolveTransport, read by the
+    ! Module-level saved state — set by SolveTransport_FEM, read by the
     ! private callback wrappers below.
     ! ------------------------------------------------------------------
-    type(t_mesh_iga),      pointer, save :: s_mesh    => null()
-    type(t_finite_iga),    pointer, save :: s_FE      => null()
+    type(t_mesh_fem),      pointer, save :: s_mesh    => null()
+    type(t_finite_fem),    pointer, save :: s_FE      => null()
     type(t_sn_quadrature), pointer, save :: s_sn_quad => null()
     type(t_transport_data), pointer, save :: s_TD      => null()
     type(t_material),      pointer, save :: s_mats(:) => null()
@@ -46,10 +46,10 @@ module m_transport_iga
 
 contains
 
-    subroutine Transport_Sweep(mesh, FE, sn_quad, TD, ang_flux, scalar_flux, &
-                                total_source, sweep_order, ref_ID)
-        type(t_mesh_iga),      intent(in)    :: mesh
-        type(t_finite_iga),    intent(in)    :: FE
+    subroutine Transport_Sweep_FEM(mesh, FE, sn_quad, TD, ang_flux, scalar_flux, &
+                                    total_source, sweep_order, ref_ID)
+        type(t_mesh_fem),      intent(in)    :: mesh
+        type(t_finite_fem),    intent(in)    :: FE
         type(t_sn_quadrature), intent(in)    :: sn_quad
         type(t_transport_data), intent(in)    :: TD
         real(dp),              intent(inout) :: ang_flux(:,:,:), scalar_flux(:,:)
@@ -115,7 +115,7 @@ contains
                     where (b < 0.0_dp) b = 0.0_dp
 
                     if (any(b /= b)) then
-                        write(*,'(A,2I6)') "FATAL: NaN in sweep, elem/angle=", ie, mm
+                        write(*,'(A,2I6)') "FATAL: NaN in FEM sweep, elem/angle=", ie, mm
                         stop
                     end if
 
@@ -129,16 +129,16 @@ contains
             end do
         end do
         !$OMP END PARALLEL DO
-    end subroutine Transport_Sweep
+    end subroutine Transport_Sweep_FEM
 
-    subroutine Source_DGFEM(total_src, scalar_flux, k_eff, materials, mesh, FE, TD, &
-                             n_groups, is_adjoint, is_eigenvalue)
+    subroutine Source_DGFEM_FEM(total_src, scalar_flux, k_eff, materials, mesh, FE, TD, &
+                                 n_groups, is_adjoint, is_eigenvalue)
         real(dp),              intent(inout) :: total_src(:,:)
         real(dp),              intent(in)    :: scalar_flux(:,:)
         real(dp),              intent(in)    :: k_eff
         type(t_material),      intent(in)    :: materials(:)
-        type(t_mesh_iga),      intent(in)    :: mesh
-        type(t_finite_iga),    intent(in)    :: FE
+        type(t_mesh_fem),      intent(in)    :: mesh
+        type(t_finite_fem),    intent(in)    :: FE
         type(t_transport_data), intent(in)    :: TD
         integer,               intent(in)    :: n_groups
         logical,               intent(in)    :: is_adjoint, is_eigenvalue
@@ -178,18 +178,18 @@ contains
             where (total_src(idx_start:idx_end,:) < 0.0_dp) total_src(idx_start:idx_end,:) = 0.0_dp
 
             if (any(total_src(idx_start:idx_end,:) /= total_src(idx_start:idx_end,:))) then
-                write(*,'(A,I6)') "FATAL: NaN in source, elem=", ee; stop
+                write(*,'(A,I6)') "FATAL: NaN in FEM source, elem=", ee; stop
             end if
         end do
         !$OMP END PARALLEL DO
-    end subroutine Source_DGFEM
+    end subroutine Source_DGFEM_FEM
 
-    subroutine Calculate_Total_Production_DGFEM(total_prod, scalar_flux, materials, mesh, FE, TD, is_adjoint)
+    subroutine Calculate_Total_Production_DGFEM_FEM(total_prod, scalar_flux, materials, mesh, FE, TD, is_adjoint)
         real(dp),              intent(out) :: total_prod
         real(dp),              intent(in)  :: scalar_flux(:,:)
         type(t_material),      intent(in)  :: materials(:)
-        type(t_mesh_iga),      intent(in)  :: mesh
-        type(t_finite_iga),    intent(in)  :: FE
+        type(t_mesh_fem),      intent(in)  :: mesh
+        type(t_finite_fem),    intent(in)  :: FE
         type(t_transport_data), intent(in)  :: TD
         logical,               intent(in)  :: is_adjoint
 
@@ -208,20 +208,20 @@ contains
             end do
         end do
         !$OMP END PARALLEL DO
-    end subroutine Calculate_Total_Production_DGFEM
+    end subroutine Calculate_Total_Production_DGFEM_FEM
 
     ! ==================================================================
     ! High-level entry point.
     ! Sets up module context, allocates working arrays, then delegates
     ! to the shared PowerIteration driver via three callback wrappers.
     ! ==================================================================
-    subroutine SolveTransport(mesh, materials, FE, sn_quad, TD, &
-                               scalar_flux, ang_flux_out, k_eff, &
-                               sweep_order, ref_ids, max_outer, tol, &
-                               is_adjoint, is_eigenvalue)
-        type(t_mesh_iga),      intent(in),    target :: mesh
+    subroutine SolveTransport_FEM(mesh, materials, FE, sn_quad, TD, &
+                                   scalar_flux, ang_flux_out, k_eff, &
+                                   sweep_order, ref_ids, max_outer, tol, &
+                                   is_adjoint, is_eigenvalue)
+        type(t_mesh_fem),      intent(in),    target :: mesh
         type(t_material),      intent(in),    target :: materials(:)
-        type(t_finite_iga),    intent(in),    target :: FE
+        type(t_finite_fem),    intent(in),    target :: FE
         type(t_sn_quadrature), intent(in),    target :: sn_quad
         type(t_transport_data), intent(in),    target :: TD
         real(dp), allocatable, intent(out)           :: scalar_flux(:,:)
@@ -255,41 +255,32 @@ contains
 
         call PowerIteration(scalar_flux, k_eff, max_outer, tol, &
                              is_eigenvalue, is_adjoint,           &
-                             transport_source, transport_solve, transport_production)
+                             transport_source_fem, transport_solve_fem, transport_production_fem)
 
         call move_alloc(s_ang_flux, ang_flux_out)
-    end subroutine SolveTransport
+    end subroutine SolveTransport_FEM
 
-    ! ------------------------------------------------------------------
-    ! Callback: build scatter + fission source for all groups.
-    ! ------------------------------------------------------------------
-    subroutine transport_source(src, flux, k_eff, is_eigenvalue, is_adjoint)
+    subroutine transport_source_fem(src, flux, k_eff, is_eigenvalue, is_adjoint)
         real(dp), intent(inout) :: src(:,:)
         real(dp), intent(in)    :: flux(:,:), k_eff
         logical,  intent(in)    :: is_eigenvalue, is_adjoint
-        call Source_DGFEM(src, flux, k_eff, s_mats, s_mesh, s_FE, s_TD, &
-                          s_n_groups, is_adjoint, is_eigenvalue)
-    end subroutine transport_source
+        call Source_DGFEM_FEM(src, flux, k_eff, s_mats, s_mesh, s_FE, s_TD, &
+                               s_n_groups, is_adjoint, is_eigenvalue)
+    end subroutine transport_source_fem
 
-    ! ------------------------------------------------------------------
-    ! Callback: perform one transport sweep (updates flux from src).
-    ! ------------------------------------------------------------------
-    subroutine transport_solve(flux, src)
+    subroutine transport_solve_fem(flux, src)
         real(dp), intent(inout) :: flux(:,:)
         real(dp), intent(in)    :: src(:,:)
-        call Transport_Sweep(s_mesh, s_FE, s_sn_quad, s_TD, &
-                             s_ang_flux, flux, src,          &
-                             s_sweep_order, s_ref_ids)
-    end subroutine transport_solve
+        call Transport_Sweep_FEM(s_mesh, s_FE, s_sn_quad, s_TD, &
+                                 s_ang_flux, flux, src,          &
+                                 s_sweep_order, s_ref_ids)
+    end subroutine transport_solve_fem
 
-    ! ------------------------------------------------------------------
-    ! Callback: compute total fission production for k-eff update.
-    ! ------------------------------------------------------------------
-    subroutine transport_production(prod, flux, is_adjoint)
+    subroutine transport_production_fem(prod, flux, is_adjoint)
         real(dp), intent(out) :: prod
         real(dp), intent(in)  :: flux(:,:)
         logical,  intent(in)  :: is_adjoint
-        call Calculate_Total_Production_DGFEM(prod, flux, s_mats, s_mesh, s_FE, s_TD, is_adjoint)
-    end subroutine transport_production
+        call Calculate_Total_Production_DGFEM_FEM(prod, flux, s_mats, s_mesh, s_FE, s_TD, is_adjoint)
+    end subroutine transport_production_fem
 
-end module m_transport_iga
+end module m_transport_fem

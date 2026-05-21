@@ -1,13 +1,12 @@
 &maniac_config
-    ! Physics / method selector:
-    !   "transport_iga"  -- IGA DG-SN discrete-ordinates transport
-    !   "diffusion_iga"  -- IGA CG multigroup diffusion (PETSc)
-    physics_mode   = "transport_iga"
+    ! Solver: "transport" (DG-SN discrete ordinates) or "diffusion" (CG multigroup, PETSc)
+    ! Discretisation method is detected automatically from Problem_type in the mesh file.
+    solver         = "transport"
 
     ! Mesh and material files (paths relative to the executable location)
-    mesh_file      = "/home/tom/Documents/MANIAC/MANIAC_2.0/input/c5g7_test.asmg"
-    mat_file       = "/home/tom/Documents/MANIAC/MANIAC_2.0/input/MATS.txt"
-    output_dir     = "/home/tom/Documents/MANIAC/MANIAC_2.0/output"
+    mesh_file      = "input/c5g7_test.asmg"
+    mat_file       = "input/MATS.txt"
+    output_dir     = "output"
 
     ! Eigenvalue vs. fixed-source
     is_eigenvalue  = .true.
@@ -15,29 +14,28 @@
 
     ! Iteration control
     max_outer      = 900
-    tol            = 1.0e-6
+    tol            = 1.0e-5
 
     ! Transport: SN order (2, 4, 6, 8, 10, 12, ...)
-    sn_order       = 16
+    sn_order       = 8
 
     ! Reflective boundary IDs (from ASMG $1D/$2D patches).
-    ! List the bc_id values that should be treated as reflective = 2
+    ! List the bc_id values that should be treated as reflective.
     ! Set n_ref_ids = 0 for vacuum-only problems.
     n_ref_ids      = 1
     ref_ids        = 2 0 0 0 0 0 0 0
 
     ! Linear solver (diffusion only):
-    !   1 = PCG (custom, no PETSc needed)
-    !   2 = PETSc CG
-    !   3 = PETSc GMRES
-    !   4 = PETSc BiCGSTAB
+    !   1 = PETSc CG
+    !   2 = PETSc GMRES
+    !   3 = PETSc BiCGSTAB
     solver_type    = 2
 
     ! Preconditioner (diffusion only):
     !   0 = None  1 = Jacobi  2 = ILU  3 = Cholesky/ICC  4 = GAMG
-    preconditioner = 2
+    preconditioner = 4
 
     ! VTK output refinement level (sub-cells per knot span per direction)
-    vtk_refine     = 10
+    vtk_refine     = 3
     ang_out        = .true.
 /

@@ -12,11 +12,11 @@ module m_output_iga
     use m_quadrature
     implicit none
     private
-    public :: export_diffusion_vtk, export_transport_vtk
+    public :: export_diffusion_vtk_iga, export_transport_vtk_iga
 
 contains
 
-    subroutine export_diffusion_vtk(outdir, tag, mesh, FE, X_cg, n_groups, refine_level)
+    subroutine export_diffusion_vtk_iga(outdir, tag, mesh, FE, X_cg, n_groups, refine_level)
         character(len=*),   intent(in) :: outdir, tag
         type(t_mesh_iga),   intent(in) :: mesh
         type(t_finite_iga), intent(in) :: FE
@@ -26,7 +26,8 @@ contains
         character(len=512) :: fpath
         integer :: unit_v, gid
 
-        fpath = trim(outdir) // "/" // trim(tag) // "_n=" // trim(int_to_str(FE%order)) // ".vtk"
+        fpath = trim(outdir) // "/" // trim(tag) // &
+                "_iga_n=" // trim(int_to_str(FE%order)) // ".vtk"
         unit_v = 101
         open(unit_v, file=trim(fpath), status='replace', action='write')
 
@@ -42,9 +43,9 @@ contains
 
         close(unit_v)
         write(*,'(A)') "  Written: " // trim(fpath)
-    end subroutine export_diffusion_vtk
+    end subroutine export_diffusion_vtk_iga
 
-    subroutine export_transport_vtk(outdir, tag, mesh, FE, QuadSn, scalar_flux, &
+    subroutine export_transport_vtk_iga(outdir, tag, mesh, FE, QuadSn, scalar_flux, &
                                      n_groups, refine_level, ang_flux, ang_out)
         character(len=*),      intent(in)           :: outdir, tag
         type(t_mesh_iga),      intent(in)           :: mesh
@@ -62,7 +63,7 @@ contains
         integer :: n_angles_export, basep
 
         fpath = trim(outdir) // "/" // trim(tag) // &
-                "_n=" // trim(int_to_str(FE%order)) // &
+                "_iga_n=" // trim(int_to_str(FE%order)) // &
                 "_sn=" // trim(int_to_str(QuadSn%order)) // ".vtk"
         unit_v = 102
         open(unit_v, file=trim(fpath), status='replace', action='write')
@@ -129,7 +130,7 @@ contains
 
         close(unit_v)
         write(*,'(A)') "  Written: " // trim(fpath)
-    end subroutine export_transport_vtk
+    end subroutine export_transport_vtk_iga
 
     ! ------------------------------------------------------------------
     ! 2D VTK body: quad mesh, refine_level^2 nodes per element.
@@ -166,9 +167,9 @@ contains
         if (do_bc) then
             allocate(node_bc(mesh%n_nodes), elem_bc(mesh%n_elems))
             node_bc = 0
-            do s = 1, size(mesh%surfaces)
-                do k = 1, size(mesh%surfaces(s)%cp_ids)
-                    node_bc(mesh%surfaces(s)%cp_ids(k)) = mesh%surfaces(s)%bc_id
+            do s = 1, size(mesh%iga_surfaces)
+                do k = 1, size(mesh%iga_surfaces(s)%cp_ids)
+                    node_bc(mesh%iga_surfaces(s)%cp_ids(k)) = mesh%iga_surfaces(s)%bc_id
                 end do
             end do
             do ee = 1, mesh%n_elems
@@ -250,6 +251,12 @@ contains
             end if
         end if
 
+        write(unit_v,'(A)') "SCALARS PATCH_ID int 1"
+        write(unit_v,'(A)') "LOOKUP_TABLE default"
+        do ee = 1, mesh%n_elems
+            do ii = 1, (refine_level-1)**2; write(unit_v,'(I10)') mesh%elem_patch_id(ee); end do
+        end do
+
         write(unit_v,'(A,I10)') "POINT_DATA ", n_sub_nodes
         do g = 1, n_groups
             write(unit_v,'(A,I0)') "SCALARS Flux_Group_", g
@@ -288,9 +295,9 @@ contains
         if (do_bc) then
             allocate(node_bc(mesh%n_nodes), elem_bc(mesh%n_elems))
             node_bc = 0
-            do ii = 1, size(mesh%surfaces)
-                do jj = 1, size(mesh%surfaces(ii)%cp_ids)
-                    node_bc(mesh%surfaces(ii)%cp_ids(jj)) = mesh%surfaces(ii)%bc_id
+            do ii = 1, size(mesh%iga_surfaces)
+                do jj = 1, size(mesh%iga_surfaces(ii)%cp_ids)
+                    node_bc(mesh%iga_surfaces(ii)%cp_ids(jj)) = mesh%iga_surfaces(ii)%bc_id
                 end do
             end do
             do ee = 1, mesh%n_elems
@@ -378,6 +385,12 @@ contains
                 deallocate(elem_bc)
             end if
         end if
+
+        write(unit_v,'(A)') "SCALARS PATCH_ID int 1"
+        write(unit_v,'(A)') "LOOKUP_TABLE default"
+        do ee = 1, mesh%n_elems
+            do ii = 1, (refine_level-1)**3; write(unit_v,'(I10)') mesh%elem_patch_id(ee); end do
+        end do
 
         write(unit_v,'(A,I10)') "POINT_DATA ", n_sub_nodes
         do g = 1, n_groups

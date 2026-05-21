@@ -3,19 +3,20 @@
 #include <petsc/finclude/petscmat.h>
 #include <petsc/finclude/petscksp.h>
 
-! IGA diffusion solver: element assembly, BC application, and power iteration.
+! FEM CG multigroup diffusion solver: element assembly, BC application, and power iteration.
+! Supports 2D (quad elements) and 3D (hex elements) Lagrange meshes.
 !
 ! Public:
-!   SolveDiffusion      -- high-level entry: assemble + power iteration
-!   assemble_petsc_iga  -- PETSc matrices (A, F, S, ProdVec, FixedSrc)
-!   apply_bcs_iga       -- Robin (vacuum/albedo) and Dirichlet BCs
-module m_diffusion_iga
+!   SolveDiffusion_FEM     -- high-level entry: assemble + power iteration
+!   assemble_petsc_fem     -- PETSc matrices (A, F, S, ProdVec, FixedSrc)
+!   apply_bcs_fem          -- Robin (vacuum/albedo) and Dirichlet BCs
+module m_diffusion_fem
     use m_constants
     use m_types
-    use m_types_iga
+    use m_types_fem
     use m_material
     use m_quadrature
-    use m_basis_iga
+    use m_basis_fem,       only: GetMapping2D_FEM, GetMapping3D_FEM
     use m_petsc,           only: setup_ksp, petsc_build_sparsity, petsc_create_diff_mats, &
                                   petsc_assemble_diff_mats, petsc_setup_ksp_group, &
                                   petsc_destroy_diff_state
@@ -25,14 +26,14 @@ module m_diffusion_iga
     use petscmat
     use petscksp
     implicit none
-    public :: SolveDiffusion
-    public :: assemble_petsc_iga, apply_bcs_iga
+    public :: SolveDiffusion_FEM
+    public :: assemble_petsc_fem, apply_bcs_fem
 
     ! ------------------------------------------------------------------
-    ! Module-level saved state — set by SolveDiffusion, read by callbacks.
+    ! Module-level saved state — set by SolveDiffusion_FEM, read by callbacks.
     ! ------------------------------------------------------------------
-    type(t_mesh_iga),   pointer, save :: s_d_mesh    => null()
-    type(t_finite_iga), pointer, save :: s_d_FE      => null()
+    type(t_mesh_fem),   pointer, save :: s_d_mesh    => null()
+    type(t_finite_fem), pointer, save :: s_d_FE      => null()
     type(t_material),   pointer, save :: s_d_mats(:) => null()
 
     KSP, allocatable, save :: s_d_KSPs(:)
@@ -49,14 +50,14 @@ module m_diffusion_iga
 contains
 
     ! ------------------------------------------------------------------
-    ! Build PETSc multigroup diffusion matrices for an IGA mesh.
+    ! Build PETSc multigroup diffusion matrices for a FEM mesh.
     ! ------------------------------------------------------------------
-    subroutine assemble_petsc_iga(A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, &
+    subroutine assemble_petsc_fem(A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, &
                                    mesh, FE, Quad, mats, n_groups, is_adjoint)
         Mat, allocatable, intent(out) :: A_MAT(:), MAT_F(:,:), MAT_S(:,:)
         Vec, allocatable, intent(out) :: PROD_VEC(:), FixedSrc(:)
-        type(t_mesh_iga),   intent(in) :: mesh
-        type(t_finite_iga), intent(in) :: FE
+        type(t_mesh_fem),   intent(in) :: mesh
+        type(t_finite_fem), intent(in) :: FE
         type(t_quadrature), intent(in) :: Quad
         type(t_material),   intent(in) :: mats(:)
         integer,            intent(in) :: n_groups
@@ -70,25 +71,25 @@ contains
         deallocate(nnz)
 
         count = 0
-        write(*,'(A)') " [ IGA MATRIX ] :: Starting element-wise assembly..."
+        write(*,'(A)') " [ FEM MATRIX ] :: Starting element-wise assembly..."
         !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(ee)
         do ee = 1, mesh%n_elems
-            call assemble_iga_elem_petsc(ee, mesh, FE, Quad, mats, n_groups, is_adjoint, &
+            call assemble_fem_elem_petsc(ee, mesh, FE, Quad, mats, n_groups, is_adjoint, &
                                          A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, count)
         end do
         !$OMP END PARALLEL DO
 
         call petsc_assemble_diff_mats(A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, n_groups)
-    end subroutine assemble_petsc_iga
+    end subroutine assemble_petsc_fem
 
     ! ------------------------------------------------------------------
-    ! Internal: assemble one IGA element into PETSc matrices.
+    ! Internal: assemble one FEM element into PETSc matrices.
     ! ------------------------------------------------------------------
-    subroutine assemble_iga_elem_petsc(ee, mesh, FE, Quad, mats, n_groups, is_adjoint, &
+    subroutine assemble_fem_elem_petsc(ee, mesh, FE, Quad, mats, n_groups, is_adjoint, &
                                        A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, count)
         integer,            intent(in)    :: ee, n_groups
-        type(t_mesh_iga),   intent(in)    :: mesh
-        type(t_finite_iga), intent(in)    :: FE
+        type(t_mesh_fem),   intent(in)    :: mesh
+        type(t_finite_fem), intent(in)    :: FE
         type(t_quadrature), intent(in)    :: Quad
         type(t_material),   intent(in)    :: mats(:)
         logical,            intent(in)    :: is_adjoint
@@ -98,9 +99,8 @@ contains
 
         integer  :: i, j, q, mat_id, g_to, g_from
         real(dp) :: dN_dx(FE%n_basis), dN_dy(FE%n_basis), dN_dz(FE%n_basis)
-        real(dp) :: R_basis(FE%n_basis), detJ, dV
+        real(dp) :: N_basis(FE%n_basis), detJ, dV
         real(dp) :: ec(FE%n_basis, 3)
-        real(dp) :: u1, u2, v1, v2, w1, w2
         real(dp) :: N_i, N_j, stiff, nsf, chi, sgs
         real(dp) :: loc_A(FE%n_basis, FE%n_basis, n_groups)
         real(dp) :: loc_F(FE%n_basis, FE%n_basis, n_groups, n_groups)
@@ -116,29 +116,23 @@ contains
         idx    = mesh%elems(ee,:) - 1
         do i = 1, FE%n_basis; ec(i,:) = mesh%nodes(mesh%elems(ee,i),:); end do
 
-        u1 = mesh%elem_u_min(ee); u2 = mesh%elem_u_max(ee)
-        v1 = mesh%elem_v_min(ee); v2 = mesh%elem_v_max(ee)
-
         do q = 1, Quad%n_points
             if (mesh%dim == 2) then
-                call GetMapping2D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, &
-                                  ec(:,1:2), dN_dx, dN_dy, detJ, R_basis)
+                call GetMapping2D_FEM(FE, q, ec(:,1:2), dN_dx, dN_dy, detJ, N_basis)
                 dN_dz = 0.0_dp
             else
-                w1 = mesh%elem_w_min(ee); w2 = mesh%elem_w_max(ee)
-                call GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, &
-                                  ec, dN_dx, dN_dy, dN_dz, detJ, R_basis)
+                call GetMapping3D_FEM(FE, q, ec, dN_dx, dN_dy, dN_dz, detJ, N_basis)
             end if
-            dV = detJ * Quad%weights(q)
+            dV = abs(detJ) * Quad%weights(q)
 
             do g_to = 1, n_groups
                 do i = 1, FE%n_basis
-                    N_i = R_basis(i)
+                    N_i = N_basis(i)
                     nsf = merge(mats(mat_id)%NuSigF(g_to), mats(mat_id)%Chi(g_to), .not. is_adjoint)
                     loc_Prod(i,g_to) = loc_Prod(i,g_to) + nsf * N_i * dV
                     loc_Src(i,g_to)  = loc_Src(i,g_to)  + mats(mat_id)%Src(g_to) * N_i * dV
                     do j = 1, FE%n_basis
-                        N_j   = R_basis(j)
+                        N_j   = N_basis(j)
                         stiff = mats(mat_id)%D(g_to) * &
                                 (dN_dx(i)*dN_dx(j) + dN_dy(i)*dN_dy(j) + dN_dz(i)*dN_dz(j)) &
                               + mats(mat_id)%SigmaR(g_to) * N_i * N_j
@@ -177,14 +171,15 @@ contains
             ">>> Assembled ", count, " / ", mesh%n_elems, " (", &
             real(count,dp)/real(mesh%n_elems,dp)*100.0_dp, "%)"
         !$OMP END CRITICAL
-    end subroutine assemble_iga_elem_petsc
+    end subroutine assemble_fem_elem_petsc
 
     ! ------------------------------------------------------------------
     ! Apply diffusion boundary conditions to a PETSc matrix.
     ! ------------------------------------------------------------------
-    subroutine apply_bcs_iga(mesh, QuadBound, bc_cfg, A)
-        type(t_mesh_iga),   intent(in)    :: mesh
-        type(t_quadrature), intent(in)    :: QuadBound
+    subroutine apply_bcs_fem(mesh, FE, QuadFace, bc_cfg, A)
+        type(t_mesh_fem),   intent(in)    :: mesh
+        type(t_finite_fem), intent(in)    :: FE
+        type(t_quadrature), intent(in)    :: QuadFace
         type(t_bc_config),  intent(in)    :: bc_cfg
         Mat,                intent(inout) :: A
 
@@ -197,10 +192,10 @@ contains
         select case (bc_cfg%bc_type)
         case (BC_DIRICHLET)
             allocate(mask(mesh%n_nodes)); mask = .false.
-            do s = 1, size(mesh%iga_surfaces)
-                if (mesh%iga_surfaces(s)%bc_id /= bc_cfg%mat_id) cycle
-                do k = 1, size(mesh%iga_surfaces(s)%cp_ids)
-                    node_id = mesh%iga_surfaces(s)%cp_ids(k)
+            do s = 1, size(mesh%surfaces)
+                if (mesh%surfaces(s)%bc_id /= bc_cfg%mat_id) cycle
+                do k = 1, size(mesh%surfaces(s)%cp_ids)
+                    node_id = mesh%surfaces(s)%cp_ids(k)
                     if (node_id > 0) mask(node_id) = .true.
                 end do
             end do
@@ -215,162 +210,121 @@ contains
 
         case (BC_VACUUM, BC_ALBEDO)
             eff_alpha = merge(bc_cfg%value, 0.0_dp, bc_cfg%bc_type == BC_ALBEDO)
-            call iga_robin_petsc(mesh, QuadBound, bc_cfg%mat_id, eff_alpha, A)
+            call fem_robin_petsc(mesh, FE, QuadFace, bc_cfg%mat_id, eff_alpha, A)
         end select
-    end subroutine apply_bcs_iga
+    end subroutine apply_bcs_fem
 
-! ------------------------------------------------------------------
-    ! Robin BC — 1D edge integral (2D mesh) or 2D surface integral (3D).
-    ! Uses element-centric EvalNURBS2D for 3D boundary integrals.
     ! ------------------------------------------------------------------
-    subroutine iga_robin_petsc(mesh, QuadBound, target_id, alpha, A)
-        type(t_mesh_iga),   intent(in)    :: mesh
-        type(t_quadrature), intent(in)    :: QuadBound
+    ! Robin BC — scan all element faces for boundary faces with target_id.
+    ! 2D: 1D edge integrals.  3D: 2D face integrals.
+    ! ------------------------------------------------------------------
+    subroutine fem_robin_petsc(mesh, FE, QuadFace, target_id, alpha, A)
+        type(t_mesh_fem),   intent(in)    :: mesh
+        type(t_finite_fem), intent(in)    :: FE
+        type(t_quadrature), intent(in)    :: QuadFace
         integer,            intent(in)    :: target_id
         real(dp),           intent(in)    :: alpha
         Mat,                intent(inout) :: A
 
-        integer :: s, gp, i_span, row_b, col_b
-        integer :: n_knots_xi, ncp_global
-        real(dp) :: beta, u1, u2, xi, det_param, dV
-        real(dp) :: dx_du, dy_du
+        integer, allocatable :: node_bc_id(:)
+        integer :: s, k, ee, f, q, i, j, nf
+        integer :: face_global(FE%n_nodes_per_face)
+        real(dp) :: beta, dS, dV
+        real(dp) :: x_face(FE%n_nodes_per_face, 3)
+        real(dp) :: N_face(FE%n_nodes_per_face)
+        real(dp) :: dN_dxi(FE%n_nodes_per_face), dN_deta(FE%n_nodes_per_face)
+        real(dp) :: dx_du, dy_du, dz_du, dx_dv, dy_dv, dz_dv
+        real(dp) :: nx, ny, nz
+        real(dp) :: loc_B(FE%n_nodes_per_face, FE%n_nodes_per_face)
+        PetscInt :: idx(FE%n_nodes_per_face)
         PetscErrorCode :: ierr
 
-        ! 3D Surface specific variables
-        type(t_finite_iga) :: surf_FE
-        integer :: p, q, ncp_local, ee_surf, span_xi, span_eta
-        real(dp) :: v1, v2, eta, det_2d
-        real(dp) :: dx_dv, dy_dv, dz_dv, dz_du
-        real(dp) :: nx, ny, nz
-
-        ! Flexible arrays scoped appropriately per configuration
-        real(dp), allocatable :: R(:), dR_du(:), dR_dv(:)
-        real(dp), allocatable :: surf_w(:)
-        PetscInt, allocatable  :: enodes(:)
-        PetscScalar, allocatable :: vals(:)
-
         beta = 0.5_dp * (1.0_dp - alpha) / (1.0_dp + alpha)
+        nf   = FE%n_nodes_per_face
 
-        do s = 1, size(mesh%iga_surfaces)
-            if (mesh%iga_surfaces(s)%bc_id /= target_id) cycle
-            
-            n_knots_xi = size(mesh%iga_surfaces(s)%knots_xi)
+        ! Build per-node bc_id lookup (last surface wins if shared, which shouldn't happen)
+        allocate(node_bc_id(mesh%n_nodes)); node_bc_id = 0
+        do s = 1, size(mesh%surfaces)
+            do k = 1, size(mesh%surfaces(s)%cp_ids)
+                node_bc_id(mesh%surfaces(s)%cp_ids(k)) = mesh%surfaces(s)%bc_id
+            end do
+        end do
 
-            if (mesh%dim == 2) then
-                ncp_global = size(mesh%iga_surfaces(s)%cp_ids)
-                
-                allocate(enodes(ncp_global), vals(ncp_global*ncp_global))
-                allocate(R(ncp_global), dR_du(ncp_global))
-                allocate(surf_w(ncp_global))
-                
-                surf_w = mesh%weights(mesh%iga_surfaces(s)%cp_ids)
-                enodes = mesh%iga_surfaces(s)%cp_ids - 1
-                vals   = 0.0_dp
+        do ee = 1, mesh%n_elems
+            do f = 1, mesh%n_faces_per_elem
+                ! Collect global node IDs for this face
+                do k = 1, nf
+                    face_global(k) = mesh%elems(ee, FE%face_node_map(k,f))
+                end do
 
-                do i_span = 1, n_knots_xi - 1
-                    u1 = mesh%iga_surfaces(s)%knots_xi(i_span)
-                    u2 = mesh%iga_surfaces(s)%knots_xi(i_span+1)
-                    if (abs(u2-u1) < 1.0e-10_dp) cycle
-                    
-                    do gp = 1, QuadBound%n_points
-                        xi        = 0.5_dp * ((u2-u1)*QuadBound%xi(gp) + (u2+u1))
-                        det_param = 0.5_dp * (u2 - u1)
-                        
-                        R = 0.0_dp; dR_du = 0.0_dp
-                        call EvalNURBS1D(mesh%order, i_span, mesh%iga_surfaces(s)%knots_xi, surf_w, xi, R, dR_du)
-                        
-                        dx_du = dot_product(mesh%nodes(mesh%iga_surfaces(s)%cp_ids, 1), dR_du)
-                        dy_du = dot_product(mesh%nodes(mesh%iga_surfaces(s)%cp_ids, 2), dR_du)
-                        
-                        dV = sqrt(dx_du**2 + dy_du**2) * det_param * QuadBound%weights(gp) * beta
-                        
-                        do row_b = 1, ncp_global
-                            do col_b = 1, ncp_global
-                                vals((row_b-1)*ncp_global+col_b) = vals((row_b-1)*ncp_global+col_b) + &
-                                    R(row_b) * R(col_b) * dV
+                ! Skip if not all face nodes belong to the target BC surface
+                if (.not. all(node_bc_id(face_global) == target_id)) cycle
+
+                ! Physical coordinates of face nodes
+                do k = 1, nf
+                    x_face(k,:) = mesh%nodes(face_global(k),:)
+                end do
+
+                loc_B = 0.0_dp
+                idx   = face_global - 1
+
+                if (mesh%dim == 2) then
+                    ! 1D edge integral
+                    do q = 1, QuadFace%n_points
+                        N_face  = FE%basis_at_face_quad(q,:)
+                        dN_dxi  = FE%dbasis_face_dxi(q,:)
+                        dx_du = dot_product(dN_dxi, x_face(:,1))
+                        dy_du = dot_product(dN_dxi, x_face(:,2))
+                        dS    = sqrt(dx_du**2 + dy_du**2)
+                        dV    = dS * QuadFace%weights(q) * beta
+                        do i = 1, nf
+                            do j = 1, nf
+                                loc_B(i,j) = loc_B(i,j) + N_face(i) * N_face(j) * dV
                             end do
                         end do
                     end do
-                end do
-                
-                call MatSetValues(A, ncp_global, enodes, ncp_global, enodes, vals, ADD_VALUES, ierr)
-                deallocate(enodes, vals, R, dR_du, surf_w)
-
-            else
-                p = mesh%order
-                q = mesh%order  
-                ncp_local = (p + 1) * (q + 1)
-                
-                allocate(enodes(ncp_local), vals(ncp_local * ncp_local))
-                allocate(R(ncp_local), dR_du(ncp_local), dR_dv(ncp_local))
-                
-                surf_FE%p_order = p
-                surf_FE%q_order = q
-                
-                do ee_surf = 1, mesh%iga_surfaces(s)%n_elements
-                    
-                    span_xi  = mesh%iga_surfaces(s)%elem_span_indices(1, ee_surf)
-                    span_eta = mesh%iga_surfaces(s)%elem_span_indices(2, ee_surf)
-                    
-                    u1 = mesh%iga_surfaces(s)%knots_xi(span_xi)
-                    u2 = mesh%iga_surfaces(s)%knots_xi(span_xi + 1)
-                    if (abs(u2 - u1) < 1.0e-10_dp) cycle
-                    
-                    v1 = mesh%iga_surfaces(s)%knots_eta(span_eta)
-                    v2 = mesh%iga_surfaces(s)%knots_eta(span_eta + 1)
-                    if (abs(v2 - v1) < 1.0e-10_dp) cycle
-                    
-                    enodes = mesh%iga_surfaces(s)%elems(ee_surf, 1:ncp_local)
-                    vals = 0.0_dp
-                    
-                    do gp = 1, QuadBound%n_points
-                        xi        = 0.5_dp * ((u2 - u1) * QuadBound%xi(gp)  + (u2 + u1))
-                        eta       = 0.5_dp * ((v2 - v1) * QuadBound%eta(gp) + (v2 + v1))
-                        det_param = 0.25_dp * (u2 - u1) * (v2 - v1)
-                        
-                        call EvalNURBS2D(surf_FE, ee_surf, mesh%iga_surfaces(s), mesh%weights, xi, eta, R, dR_du, dR_dv)
-                        
-                        dx_du = dot_product(mesh%nodes(enodes, 1), dR_du)
-                        dy_du = dot_product(mesh%nodes(enodes, 2), dR_du)
-                        dz_du = dot_product(mesh%nodes(enodes, 3), dR_du)
-                        
-                        dx_dv = dot_product(mesh%nodes(enodes, 1), dR_dv)
-                        dy_dv = dot_product(mesh%nodes(enodes, 2), dR_dv)
-                        dz_dv = dot_product(mesh%nodes(enodes, 3), dR_dv)
-                        
+                else
+                    ! 2D face integral (3D mesh)
+                    do q = 1, QuadFace%n_points
+                        N_face  = FE%basis_at_face_quad(q,:)
+                        dN_dxi  = FE%dbasis_face_dxi(q,:)
+                        dN_deta = FE%dbasis_face_deta(q,:)
+                        dx_du = dot_product(dN_dxi,  x_face(:,1))
+                        dy_du = dot_product(dN_dxi,  x_face(:,2))
+                        dz_du = dot_product(dN_dxi,  x_face(:,3))
+                        dx_dv = dot_product(dN_deta, x_face(:,1))
+                        dy_dv = dot_product(dN_deta, x_face(:,2))
+                        dz_dv = dot_product(dN_deta, x_face(:,3))
                         nx = dy_du*dz_dv - dz_du*dy_dv
                         ny = dz_du*dx_dv - dx_du*dz_dv
                         nz = dx_du*dy_dv - dy_du*dx_dv
-                        det_2d = sqrt(nx**2 + ny**2 + nz**2)
-                        
-                        dV = det_2d * det_param * QuadBound%weights(gp) * beta
-                        
-                        do row_b = 1, ncp_local
-                            do col_b = 1, ncp_local
-                                vals((row_b-1)*ncp_local + col_b) = vals((row_b-1)*ncp_local + col_b) + &
-                                                                    R(row_b) * R(col_b) * dV
+                        dS = sqrt(nx**2 + ny**2 + nz**2)
+                        dV = dS * QuadFace%weights(q) * beta
+                        do i = 1, nf
+                            do j = 1, nf
+                                loc_B(i,j) = loc_B(i,j) + N_face(i) * N_face(j) * dV
                             end do
                         end do
                     end do
-                    
-                    call MatSetValues(A, ncp_local, enodes - 1, ncp_local, enodes - 1, vals, ADD_VALUES, ierr)
-                end do
-                
-                deallocate(enodes, vals, R, dR_du, dR_dv)
-            end if
+                end if
+
+                call MatSetValues(A, nf, idx, nf, idx, reshape(loc_B, [nf**2]), ADD_VALUES, ierr)
+            end do
         end do
-    end subroutine iga_robin_petsc
+
+        deallocate(node_bc_id)
+    end subroutine fem_robin_petsc
 
     ! ==================================================================
     ! High-level entry point.
     ! ==================================================================
-    subroutine SolveDiffusion(mesh, FE, Quad, QuadBound, mats,   &
-                               solver_type, preconditioner, ref_ids, &
-                               max_outer, tol, is_eigenvalue, is_adjoint, &
-                               phi_out, k_eff_out)
-        type(t_mesh_iga),   intent(in), target :: mesh
-        type(t_finite_iga), intent(in), target :: FE
-        type(t_quadrature), intent(in)         :: Quad, QuadBound
+    subroutine SolveDiffusion_FEM(mesh, FE, Quad, QuadFace, mats,   &
+                                   solver_type, preconditioner, ref_ids, &
+                                   max_outer, tol, is_eigenvalue, is_adjoint, &
+                                   phi_out, k_eff_out)
+        type(t_mesh_fem),   intent(in), target :: mesh
+        type(t_finite_fem), intent(in), target :: FE
+        type(t_quadrature), intent(in)         :: Quad, QuadFace
         type(t_material),   intent(in), target :: mats(:)
         integer,            intent(in)         :: solver_type, preconditioner
         integer,            intent(in)         :: ref_ids(:)
@@ -396,15 +350,15 @@ contains
         call petsc_destroy_diff_state(s_d_KSPs, s_d_X_petsc, s_d_MAT_F, s_d_MAT_S, &
                                        s_d_FixedSrc, s_d_tmp_b, s_d_tmp_x, s_d_tmp_valid)
 
-        call assemble_petsc_iga(loc_A, loc_MF, loc_MS, loc_PV, loc_FS, &
+        call assemble_petsc_fem(loc_A, loc_MF, loc_MS, loc_PV, loc_FS, &
                                  mesh, FE, Quad, mats, mesh%n_groups, is_adjoint)
 
-        call collect_vacuum_ids(mesh, ref_ids, uniq_bc_ids, n_uniq)
+        call collect_vacuum_ids_fem(mesh, ref_ids, uniq_bc_ids, n_uniq)
         bc_vac%bc_type = BC_VACUUM; bc_vac%value = 0.0_dp
         do ss = 1, n_uniq
             bc_vac%mat_id = uniq_bc_ids(ss)
             do g = 1, mesh%n_groups
-                call apply_bcs_iga(mesh, QuadBound, bc_vac, loc_A(g))
+                call apply_bcs_fem(mesh, FE, QuadFace, bc_vac, loc_A(g))
             end do
         end do
         deallocate(uniq_bc_ids)
@@ -421,7 +375,7 @@ contains
                                     solver_type, preconditioner, s_d_KSPs, s_d_X_petsc)
         deallocate(loc_A)
 
-        call extract_prod_dense(loc_PV, mesh%n_groups, mesh%n_nodes)
+        call extract_prod_dense_fem(loc_PV, mesh%n_groups, mesh%n_nodes)
         do g = 1, mesh%n_groups; call VecDestroy(loc_PV(g), ierr); end do
         deallocate(loc_PV)
 
@@ -429,15 +383,14 @@ contains
         call VecCreateSeq(PETSC_COMM_SELF, mesh%n_nodes, s_d_tmp_x, ierr)
         s_d_tmp_valid = .true.
 
-        ! Initialize flux with a non-zero guess for Power Iteration
         allocate(phi_out(mesh%n_nodes, mesh%n_groups), source=1.0_dp)
 
         call PowerIteration(phi_out, k_eff_out, max_outer, tol, &
                              is_eigenvalue, is_adjoint,          &
-                             diffusion_source, diffusion_solve, diffusion_production)
-    end subroutine SolveDiffusion
+                             diffusion_source_fem, diffusion_solve_fem, diffusion_production_fem)
+    end subroutine SolveDiffusion_FEM
 
-    subroutine diffusion_source(src, flux, k_eff, is_eigenvalue, is_adjoint)
+    subroutine diffusion_source_fem(src, flux, k_eff, is_eigenvalue, is_adjoint)
         real(dp), intent(inout) :: src(:,:)
         real(dp), intent(in)    :: flux(:,:), k_eff
         logical,  intent(in)    :: is_eigenvalue, is_adjoint
@@ -469,9 +422,9 @@ contains
                 end if
             end do
         end do
-    end subroutine diffusion_source
+    end subroutine diffusion_source_fem
 
-    subroutine diffusion_solve(flux, src)
+    subroutine diffusion_solve_fem(flux, src)
         real(dp), intent(inout) :: flux(:,:)
         real(dp), intent(in)    :: src(:,:)
         integer        :: g
@@ -487,9 +440,9 @@ contains
             flux(:,g) = parr(:)
             call VecRestoreArrayRead(s_d_X_petsc(g), parr, ierr)
         end do
-    end subroutine diffusion_solve
+    end subroutine diffusion_solve_fem
 
-    subroutine diffusion_production(prod, flux, is_adjoint)
+    subroutine diffusion_production_fem(prod, flux, is_adjoint)
         real(dp), intent(out) :: prod
         real(dp), intent(in)  :: flux(:,:)
         logical,  intent(in)  :: is_adjoint
@@ -499,9 +452,9 @@ contains
         do g = 1, s_d_n_groups
             prod = prod + dot_product(s_d_prod_dense(:,g), flux(:,g))
         end do
-    end subroutine diffusion_production
+    end subroutine diffusion_production_fem
 
-    subroutine extract_prod_dense(prod_vecs, n_groups, n_nodes)
+    subroutine extract_prod_dense_fem(prod_vecs, n_groups, n_nodes)
         Vec,     intent(in) :: prod_vecs(:)
         integer, intent(in) :: n_groups, n_nodes
         integer :: g
@@ -515,20 +468,20 @@ contains
             s_d_prod_dense(:,g) = parr(:)
             call VecRestoreArrayRead(prod_vecs(g), parr, ierr)
         end do
-    end subroutine extract_prod_dense
+    end subroutine extract_prod_dense_fem
 
-    subroutine collect_vacuum_ids(mesh, ref_ids, uniq_ids, n_uniq)
-        type(t_mesh_iga), intent(in)           :: mesh
+    subroutine collect_vacuum_ids_fem(mesh, ref_ids, uniq_ids, n_uniq)
+        type(t_mesh_fem), intent(in)           :: mesh
         integer,          intent(in)           :: ref_ids(:)
         integer, allocatable, intent(out)      :: uniq_ids(:)
         integer,              intent(out)      :: n_uniq
         integer :: s, bc_id, j
         logical :: found
 
-        allocate(uniq_ids(size(mesh%iga_surfaces)))
+        allocate(uniq_ids(size(mesh%surfaces)))
         n_uniq = 0
-        do s = 1, size(mesh%iga_surfaces)
-            bc_id = mesh%iga_surfaces(s)%bc_id
+        do s = 1, size(mesh%surfaces)
+            bc_id = mesh%surfaces(s)%bc_id
             if (any(bc_id == ref_ids)) cycle
             found = .false.
             do j = 1, n_uniq
@@ -539,6 +492,6 @@ contains
                 uniq_ids(n_uniq) = bc_id
             end if
         end do
-    end subroutine collect_vacuum_ids
+    end subroutine collect_vacuum_ids_fem
 
-end module m_diffusion_iga
+end module m_diffusion_fem

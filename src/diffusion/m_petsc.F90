@@ -14,7 +14,6 @@
 !   petsc_destroy_diff_state-- destroy all solver PETSc objects
 module m_petsc
     use m_constants
-    use m_types_iga, only: t_mesh_iga, t_finite_iga
     use petscsys
     use petscvec
     use petscmat
@@ -70,20 +69,20 @@ contains
     ! Each node receives contributions from every element it belongs to,
     ! and each element contributes n_basis columns.
     ! ------------------------------------------------------------------
-    subroutine petsc_build_sparsity(mesh, FE, nnz)
-        type(t_mesh_iga),   intent(in)  :: mesh
-        type(t_finite_iga), intent(in)  :: FE
+    subroutine petsc_build_sparsity(n_nodes, n_elems, n_basis, elems, nnz)
+        integer,   intent(in)  :: n_nodes, n_elems, n_basis
+        integer,   intent(in)  :: elems(:,:)
         PetscInt, allocatable, intent(out) :: nnz(:)
         integer :: ee, i
 
-        allocate(nnz(mesh%n_nodes)); nnz = 0
-        do ee = 1, mesh%n_elems
-            do i = 1, FE%n_basis
-                nnz(mesh%elems(ee,i)) = nnz(mesh%elems(ee,i)) + FE%n_basis
+        allocate(nnz(n_nodes)); nnz = 0
+        do ee = 1, n_elems
+            do i = 1, n_basis
+                nnz(elems(ee,i)) = nnz(elems(ee,i)) + n_basis
             end do
         end do
-        do i = 1, mesh%n_nodes
-            nnz(i) = min(nnz(i), mesh%n_nodes)
+        do i = 1, n_nodes
+            nnz(i) = min(nnz(i), n_nodes)
         end do
     end subroutine petsc_build_sparsity
 

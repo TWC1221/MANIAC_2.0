@@ -1,16 +1,17 @@
 ! Transport integral precomputation and LU factorisation for IGA meshes.
-! All output goes into t_transport_iga (TD); the mesh itself is read-only.
+! All output goes into t_transport_data (TD); the mesh itself is read-only.
 ! Supports both 2D (quad elements, 4 faces) and 3D (hex elements, 6 faces).
 !
 ! Public:
 !   InitialiseTransport  -- integrals + reflective angle map + LU factors
-module m_transport_precompute
+module m_transport_precompute_iga
     use m_constants
     use m_types
     use m_types_iga
     use m_quadrature
-    use m_basis_iga, only: GetMapping2D, GetMapping3D
+    use m_basis_iga,   only: GetMapping2D, GetMapping3D
     use m_material
+    use m_sweep_order, only: precompute_reflective_map
     implicit none
     public :: InitialiseTransport
 
@@ -42,10 +43,11 @@ contains
         type(t_sn_quadrature), intent(in)    :: sn_quad
         type(t_quadrature),    intent(in)    :: Quad2D, Quad1D
         type(t_material),      intent(in)    :: materials(:)
-        type(t_transport_iga), intent(inout) :: TD
+        type(t_transport_data), intent(inout) :: TD
 
         call precompute_integrals(mesh, FE, Quad2D, Quad1D, TD)
-        call precompute_reflective_map(mesh, sn_quad, TD)
+        call precompute_reflective_map(mesh%n_elems, mesh%n_faces_per_elem, &
+                                       sn_quad, TD%face_normals, TD%reflect_map)
         call precompute_lu(mesh, FE, sn_quad, materials, mesh%n_groups, TD)
     end subroutine InitialiseTransport
 
@@ -58,7 +60,7 @@ contains
         type(t_mesh_iga),      intent(in)    :: mesh
         type(t_finite_iga),    intent(in)    :: FE
         type(t_quadrature),    intent(in)    :: Quad, QuadFace
-        type(t_transport_iga), intent(inout) :: TD
+        type(t_transport_data), intent(inout) :: TD
 
         integer  :: ee, q, f, nf
         real(dp) :: nodes(FE%n_basis, 3)
@@ -194,38 +196,7 @@ contains
         !$OMP END PARALLEL DO
     end subroutine precompute_integrals
 
-    subroutine precompute_reflective_map(mesh, sn_quad, TD)
-        type(t_mesh_iga),      intent(in)    :: mesh
-        type(t_sn_quadrature), intent(in)    :: sn_quad
-        type(t_transport_iga), intent(inout) :: TD
 
-        integer :: ee, f, mm, m_iter
-        real(dp) :: normal(3), dir(3), ref_dir(3), max_dot, dprod
-
-        allocate(TD%reflect_map(sn_quad%n_angles, mesh%n_faces_per_elem, mesh%n_elems))
-        TD%reflect_map = 0
-
-        !$OMP PARALLEL DO PRIVATE(ee, f, normal, mm, dir, ref_dir, max_dot, m_iter, dprod)
-        do ee = 1, mesh%n_elems
-            do f = 1, mesh%n_faces_per_elem
-                normal = TD%face_normals(:,f,ee)
-                do mm = 1, sn_quad%n_angles
-                    dir = sn_quad%dirs(mm, :)
-                    ref_dir = dir - 2.0_dp * dot_product(dir, normal) * normal
-                    max_dot = -2.0_dp
-                    do m_iter = 1, sn_quad%n_angles
-                        if (abs(ref_dir(3) - sn_quad%dirs(m_iter,3)) > SMALL_NUMBER) cycle
-                        dprod = dot_product(ref_dir, sn_quad%dirs(m_iter,:))
-                        if (dprod > max_dot) then
-                            max_dot = dprod
-                            TD%reflect_map(mm,f,ee) = m_iter
-                        end if
-                    end do
-                end do
-            end do
-        end do
-        !$OMP END PARALLEL DO
-    end subroutine precompute_reflective_map
 
     subroutine precompute_lu(mesh, FE, sn_quad, materials, n_groups, TD)
         type(t_mesh_iga),      intent(in)    :: mesh
@@ -233,7 +204,7 @@ contains
         type(t_sn_quadrature), intent(in)    :: sn_quad
         type(t_material),      intent(in)    :: materials(:)
         integer,               intent(in)    :: n_groups
-        type(t_transport_iga), intent(inout) :: TD
+        type(t_transport_data), intent(inout) :: TD
 
         integer  :: ee, mm, g, f, info
         real(dp) :: A(FE%n_basis, FE%n_basis), dir(3), o_n
@@ -278,4 +249,4 @@ contains
         !$OMP END PARALLEL DO
     end subroutine precompute_lu
 
-end module m_transport_precompute
+end module m_transport_precompute_iga

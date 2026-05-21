@@ -18,10 +18,10 @@ module m_basis_iga
     use m_types_iga
     implicit none
     private
-    public :: InitialiseBasis
+    public :: InitialiseNurbsBasis
     public :: GetMapping2D, GetMapping3D
     public :: EvalNURBS1D, EvalNURBS2D, EvalNURBS3D
-    public :: DersBasisFuns
+    public :: DersNurbsBasis
 
     interface EvalNURBS2D
         module procedure EvalNURBS2D_vol
@@ -35,7 +35,7 @@ contains
     ! The face_node_map gives the local basis index of the n-th node
     ! on each face, in the same x-fastest tensor ordering used by elems.
     ! ------------------------------------------------------------------
-    subroutine InitialiseBasis(FE, mesh)
+    subroutine InitialiseNurbsBasis(FE, mesh)
         type(t_finite_iga), intent(inout) :: FE
         type(t_mesh_iga),   intent(in)    :: mesh
         integer :: ii, jj, kk, p, q, r, n
@@ -93,7 +93,7 @@ contains
                 FE%face_node_map(ii,4) = (p+1)*(q+1-ii) + 1
             end do
         end if
-    end subroutine InitialiseBasis
+    end subroutine InitialiseNurbsBasis
 
     ! ------------------------------------------------------------------
     ! 2D NURBS Jacobian mapping for a quad knot-span element.
@@ -257,8 +257,8 @@ contains
 
         R_basis = 0.0_dp; dR_dxi = 0.0_dp; dR_deta = 0.0_dp
 
-        call DersBasisFuns(span_xi,  xi,  p, 1, mesh%patches(p_idx)%knots_xi,  dN_xi)
-        call DersBasisFuns(span_eta, eta, q, 1, mesh%patches(p_idx)%knots_eta, dN_eta)
+        call DersNurbsBasis(span_xi,  xi,  p, 1, mesh%patches(p_idx)%knots_xi,  dN_xi)
+        call DersNurbsBasis(span_eta, eta, q, 1, mesh%patches(p_idx)%knots_eta, dN_eta)
 
         W = 0.0_dp; dW_dxi = 0.0_dp; dW_deta = 0.0_dp
         idx = 0
@@ -309,8 +309,8 @@ contains
 
         R_basis = 0.0_dp; dR_dxi = 0.0_dp; dR_deta = 0.0_dp
 
-        call DersBasisFuns(span_xi,  xi,  p, 1, surf%knots_xi,  dN_xi)
-        call DersBasisFuns(span_eta, eta, q, 1, surf%knots_eta, dN_eta)
+        call DersNurbsBasis(span_xi,  xi,  p, 1, surf%knots_xi,  dN_xi)
+        call DersNurbsBasis(span_eta, eta, q, 1, surf%knots_eta, dN_eta)
 
         W = 0.0_dp; dW_dxi = 0.0_dp; dW_deta = 0.0_dp
         idx = 0
@@ -361,9 +361,9 @@ contains
 
         R_basis = 0.0_dp; dR_dxi = 0.0_dp; dR_deta = 0.0_dp; dR_dzeta = 0.0_dp
 
-        call DersBasisFuns(span_xi,   xi,   p, 1, mesh%patches(p_idx)%knots_xi,   dN_xi)
-        call DersBasisFuns(span_eta,  eta,  q, 1, mesh%patches(p_idx)%knots_eta,  dN_eta)
-        call DersBasisFuns(span_zeta, zeta, r, 1, mesh%patches(p_idx)%knots_zeta, dN_zeta)
+        call DersNurbsBasis(span_xi,   xi,   p, 1, mesh%patches(p_idx)%knots_xi,   dN_xi)
+        call DersNurbsBasis(span_eta,  eta,  q, 1, mesh%patches(p_idx)%knots_eta,  dN_eta)
+        call DersNurbsBasis(span_zeta, zeta, r, 1, mesh%patches(p_idx)%knots_zeta, dN_zeta)
 
         W = 0.0_dp; dW_dxi = 0.0_dp; dW_deta = 0.0_dp; dW_dzeta = 0.0_dp
         idx = 0
@@ -415,7 +415,7 @@ contains
         real(dp) :: dN(2, p+1), W, dW_dxi, w_loc, invW, invW2
 
         R = 0.0_dp; dR_dxi = 0.0_dp
-        call DersBasisFuns(span, xi, p, 1, knots, dN)
+        call DersNurbsBasis(span, xi, p, 1, knots, dN)
         cp_start = span - p
 
         W = 0.0_dp; dW_dxi = 0.0_dp
@@ -438,7 +438,7 @@ contains
     ! ders(1, 1:p+1) = N_i values
     ! ders(2, 1:p+1) = dN_i/du values
     ! ------------------------------------------------------------------
-    subroutine DersBasisFuns(ii, u, p, n, UU, ders)
+    subroutine DersNurbsBasis(ii, u, p, n, UU, ders)
         integer,  intent(in)  :: ii, p, n
         real(dp), intent(in)  :: u, UU(:)
         real(dp), intent(out) :: ders(n+1, p+1)
@@ -489,6 +489,6 @@ contains
             ders(k+1,:) = ders(k+1,:) * r
             r = r * (p-k)
         end do
-    end subroutine DersBasisFuns
+    end subroutine DersNurbsBasis
 
 end module m_basis_iga

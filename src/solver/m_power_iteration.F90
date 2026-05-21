@@ -83,8 +83,12 @@ contains
         call compute_prod(prod_old, flux, is_adjoint)
         prod_old = max(prod_old, 1.0e-20_dp)
 
-        write(*,'(/,A)') " ========== POWER ITERATION =========="
-        write(*,'(A5,A15,A12,A12)') "Iter", "k_eff", "err_k", "err_phi"
+        write(*,*)
+        write(*,'(A)') " |=======================================================================|"
+        write(*,'(A)') " |                            POWER ITERATION                            |"
+        write(*,'(A)') " |=======================================================================|"
+        write(*,'(A, A5, A11, A16, T74, A)') " |  ", "Iter", "k_eff", "dk_eff (pcm)", "|"
+        write(*,'(A)') " |-----------------------------------------------------------------------|"
 
         do outer = 1, max_outer
             flux_old  = flux
@@ -104,16 +108,23 @@ contains
             err_k    = abs(k_eff - k_eff_old)
 
             if (mod(outer, 10) == 0 .or. outer == 1) &
-                write(*,'(I5,F15.8,E12.3,E12.3)') outer, k_eff, err_k, err_phi
+                write(*,'(A, I5, F15.8, F12.2, T74, A)') " |  ", outer, k_eff, err_k * 1.0e5_dp, "|"
 
             if (err_phi < tol .and. (err_k < tol .or. .not. is_eigenvalue)) then
-                write(*,'(A,I5,A,F12.8)') " Converged in ", outer, " iterations.  k_eff = ", k_eff
+                write(*,'(A)') " |-----------------------------------------------------------------------|"
+                write(*,'(A, I5, A, F12.8, T74, A)') " |  Converged in", outer, " iterations.  k_eff = ", k_eff, "|"
+                write(*,'(A)') " |=======================================================================|"
+                write(*,*)
                 exit
             end if
         end do
 
-        if (outer > max_outer) &
-            write(*,'(A)') " WARNING: Maximum outer iterations reached without convergence."
+        if (outer > max_outer) then
+            write(*,'(A)') " |-----------------------------------------------------------------------|"
+            write(*,'(A)') " |  WARNING: Maximum outer iterations reached without convergence.       |"
+            write(*,'(A)') " |=======================================================================|"
+            write(*,*)
+        end if
 
     end subroutine PowerIteration
 
