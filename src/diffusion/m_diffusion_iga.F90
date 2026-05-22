@@ -32,7 +32,7 @@ module m_diffusion_iga
     ! Module-level saved state — set by SolveDiffusion, read by callbacks.
     ! ------------------------------------------------------------------
     type(t_mesh_iga),   pointer, save :: s_d_mesh    => null()
-    type(t_finite_iga), pointer, save :: s_d_FE      => null()
+    type(t_basis_iga), pointer, save :: s_d_FE      => null()
     type(t_material),   pointer, save :: s_d_mats(:) => null()
 
     KSP, allocatable, save :: s_d_KSPs(:)
@@ -56,7 +56,7 @@ contains
         Mat, allocatable, intent(out) :: A_MAT(:), MAT_F(:,:), MAT_S(:,:)
         Vec, allocatable, intent(out) :: PROD_VEC(:), FixedSrc(:)
         type(t_mesh_iga),   intent(in) :: mesh
-        type(t_finite_iga), intent(in) :: FE
+        type(t_basis_iga), intent(in) :: FE
         type(t_quadrature), intent(in) :: Quad
         type(t_material),   intent(in) :: mats(:)
         integer,            intent(in) :: n_groups
@@ -88,7 +88,7 @@ contains
                                        A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, count)
         integer,            intent(in)    :: ee, n_groups
         type(t_mesh_iga),   intent(in)    :: mesh
-        type(t_finite_iga), intent(in)    :: FE
+        type(t_basis_iga), intent(in)    :: FE
         type(t_quadrature), intent(in)    :: Quad
         type(t_material),   intent(in)    :: mats(:)
         logical,            intent(in)    :: is_adjoint
@@ -237,7 +237,7 @@ contains
         PetscErrorCode :: ierr
 
         ! 3D Surface specific variables
-        type(t_finite_iga) :: surf_FE
+        type(t_basis_iga) :: surf_FE
         integer :: p, q, ncp_local, ee_surf, span_xi, span_eta
         real(dp) :: v1, v2, eta, det_2d
         real(dp) :: dx_dv, dy_dv, dz_dv, dz_du
@@ -369,7 +369,7 @@ contains
                                max_outer, tol, is_eigenvalue, is_adjoint, &
                                phi_out, k_eff_out)
         type(t_mesh_iga),   intent(in), target :: mesh
-        type(t_finite_iga), intent(in), target :: FE
+        type(t_basis_iga), intent(in), target :: FE
         type(t_quadrature), intent(in)         :: Quad, QuadBound
         type(t_material),   intent(in), target :: mats(:)
         integer,            intent(in)         :: solver_type, preconditioner

@@ -36,7 +36,7 @@ contains
     ! on each face, in the same x-fastest tensor ordering used by elems.
     ! ------------------------------------------------------------------
     subroutine InitialiseNurbsBasis(FE, mesh)
-        type(t_finite_iga), intent(inout) :: FE
+        type(t_basis_iga), intent(inout) :: FE
         type(t_mesh_iga),   intent(in)    :: mesh
         integer :: ii, jj, kk, p, q, r, n
 
@@ -111,7 +111,7 @@ contains
     subroutine GetMapping2D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, &
                             elem_coords, dN_dx, dN_dy, detJ, R_basis, &
                             R_mat, xi_custom, eta_custom, J_out)
-        type(t_finite_iga), intent(in)  :: FE
+        type(t_basis_iga), intent(in)  :: FE
         integer,            intent(in)  :: ee, q
         type(t_mesh_iga),   intent(in)  :: mesh
         type(t_quadrature), intent(in)  :: Quad
@@ -170,7 +170,7 @@ contains
     subroutine GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, &
                             elem_coords, dN_dx, dN_dy, dN_dz, detJ, R_basis, &
                             xi_custom, eta_custom, zeta_custom, J_out, R_out)
-        type(t_finite_iga), intent(in)  :: FE
+        type(t_basis_iga), intent(in)  :: FE
         integer,            intent(in)  :: ee, q
         type(t_mesh_iga),   intent(in)  :: mesh
         type(t_quadrature), intent(in)  :: Quad
@@ -240,7 +240,7 @@ contains
     ! Volume element variant: uses precomputed span indices from mesh.
     ! ------------------------------------------------------------------
     subroutine EvalNURBS2D_vol(FE, ee, mesh, xi, eta, R_basis, dR_dxi, dR_deta)
-        type(t_finite_iga), intent(in)  :: FE
+        type(t_basis_iga), intent(in)  :: FE
         integer,            intent(in)  :: ee
         type(t_mesh_iga),   intent(in)  :: mesh
         real(dp),           intent(in)  :: xi, eta
@@ -292,7 +292,7 @@ contains
     ! mesh_weights(:) is mesh%weights from the parent t_mesh_iga.
     ! ------------------------------------------------------------------
     subroutine EvalNURBS2D_surf(FE, ee, surf, mesh_weights, xi, eta, R_basis, dR_dxi, dR_deta)
-        type(t_finite_iga),  intent(in)  :: FE
+        type(t_basis_iga),  intent(in)  :: FE
         integer,             intent(in)  :: ee
         type(t_surface_iga), intent(in)  :: surf
         real(dp),            intent(in)  :: mesh_weights(:)
@@ -343,7 +343,7 @@ contains
     ! Evaluate 3D NURBS basis and parametric derivatives at (xi, eta, zeta).
     ! ------------------------------------------------------------------
     subroutine EvalNURBS3D(FE, ee, mesh, xi, eta, zeta, R_basis, dR_dxi, dR_deta, dR_dzeta)
-        type(t_finite_iga), intent(in)  :: FE
+        type(t_basis_iga), intent(in)  :: FE
         integer,            intent(in)  :: ee
         type(t_mesh_iga),   intent(in)  :: mesh
         real(dp),           intent(in)  :: xi, eta, zeta

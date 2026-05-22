@@ -182,7 +182,7 @@ contains
         integer,  intent(out) :: bad_jac, degenerate, high_skew
 
         integer  :: ee, p, c(8)
-        real(dp) :: xc(8,3), detJ, skew, ar
+        real(dp) :: xc4(4,3), xc(8,3), detJ, skew, ar
         real(dp) :: inv_ne
 
         p = mesh%order
@@ -206,11 +206,11 @@ contains
 
         do ee = 1, mesh%n_elems
             if (mesh%dim == 2) then
-                xc(1,:) = mesh%nodes(mesh%elems(ee, c(1)), :)
-                xc(2,:) = mesh%nodes(mesh%elems(ee, c(2)), :)
-                xc(3,:) = mesh%nodes(mesh%elems(ee, c(3)), :)
-                xc(4,:) = mesh%nodes(mesh%elems(ee, c(4)), :)
-                call quad_center_quality(xc(1:4, :), detJ, skew, ar)
+                xc4(1,:) = mesh%nodes(mesh%elems(ee, c(1)), :)
+                xc4(2,:) = mesh%nodes(mesh%elems(ee, c(2)), :)
+                xc4(3,:) = mesh%nodes(mesh%elems(ee, c(3)), :)
+                xc4(4,:) = mesh%nodes(mesh%elems(ee, c(4)), :)
+                call quad_center_quality(xc4, detJ, skew, ar)
                 total_meas = total_meas + max(detJ, 0.0_dp) * 4.0_dp
             else
                 xc(1,:) = mesh%nodes(mesh%elems(ee, c(1)), :)

@@ -1,7 +1,7 @@
 ! Transport sweep-order and geometry initialisation for IGA meshes.
 ! Builds element-to-element connectivity, outward face normals, upwind
 ! index tables, and angle-dependent sweep orderings.
-! All output populates t_transport_data (TD), not the mesh itself.
+! All output populates t_fem_dg (TD), not the mesh itself.
 ! Supports 2D (quad, 4 faces) and 3D (hex, 6 faces).
 !
 ! Public:
@@ -23,10 +23,10 @@ contains
 
     subroutine InitialiseGeometry(mesh, FE, QuadSn, QuadFace, TD, sweep_order)
         type(t_mesh_iga),      intent(in)    :: mesh
-        type(t_finite_iga),    intent(in)    :: FE
+        type(t_basis_iga),    intent(in)    :: FE
         type(t_sn_quadrature), intent(in)    :: QuadSn
         type(t_quadrature),    intent(in)    :: QuadFace
-        type(t_transport_data), intent(inout) :: TD
+        type(t_fem_dg), intent(inout) :: TD
         integer, allocatable,  intent(out)   :: sweep_order(:,:)
 
         integer :: mm
@@ -48,9 +48,9 @@ contains
 
     subroutine connectivity_and_normals(mesh, FE, QuadFace, TD)
         type(t_mesh_iga),      intent(in)    :: mesh
-        type(t_finite_iga),    intent(in)    :: FE
+        type(t_basis_iga),    intent(in)    :: FE
         type(t_quadrature),    intent(in)    :: QuadFace
-        type(t_transport_data), intent(inout) :: TD
+        type(t_fem_dg), intent(inout) :: TD
 
         integer  :: ee, e1, e2, f, f1, f2, q, s_idx, u, v, w, nid, k_iter, n_pts, p, orient_val
         real(dp) :: nodes(FE%n_basis, 3)
@@ -421,7 +421,7 @@ contains
 
     integer function face_orient_from_nodes(mesh, FE, e1, f1, e2, f2) result(orient)
         type(t_mesh_iga),   intent(in) :: mesh
-        type(t_finite_iga), intent(in) :: FE
+        type(t_basis_iga), intent(in) :: FE
         integer,            intent(in) :: e1, f1, e2, f2
         integer :: first_node_e1
         first_node_e1 = mesh%elems(e1, FE%face_node_map(1, f1))

@@ -1,8 +1,9 @@
 ! VTK output for IGA solvers (CG diffusion and DG transport).
 ! Supports 2D (quad cells, VTK type 9) and 3D (hex cells, VTK type 12).
 !
-! export_diffusion_vtk  -- nodal (CG) flux on IGA mesh
-! export_transport_vtk  -- element-DG flux on IGA mesh
+! export_diffusion_vtk_iga      -- nodal (CG) flux on IGA mesh
+! export_transport_vtk_iga      -- element-DG flux on IGA mesh
+! export_transport_vtk_patchiga -- patchwise-DG flux (remapped to element layout)
 module m_output_iga
     use m_constants
     use m_types
@@ -12,14 +13,15 @@ module m_output_iga
     use m_quadrature
     implicit none
     private
-    public :: export_diffusion_vtk_iga, export_transport_vtk_iga
+    public :: export_diffusion_vtk_iga, export_transport_vtk_iga, &
+              export_transport_vtk_patchiga
 
 contains
 
     subroutine export_diffusion_vtk_iga(outdir, tag, mesh, FE, X_cg, n_groups, refine_level)
         character(len=*),   intent(in) :: outdir, tag
         type(t_mesh_iga),   intent(in) :: mesh
-        type(t_finite_iga), intent(in) :: FE
+        type(t_basis_iga), intent(in) :: FE
         real(dp),           intent(in) :: X_cg(:,:)
         integer,            intent(in) :: n_groups, refine_level
 
@@ -27,7 +29,7 @@ contains
         integer :: unit_v, gid
 
         fpath = trim(outdir) // "/" // trim(tag) // &
-                "_iga_n=" // trim(int_to_str(FE%order)) // ".vtk"
+                "_iga_p=" // trim(int_to_str(FE%order)) // ".vtk"
         unit_v = 101
         open(unit_v, file=trim(fpath), status='replace', action='write')
 
@@ -46,24 +48,35 @@ contains
     end subroutine export_diffusion_vtk_iga
 
     subroutine export_transport_vtk_iga(outdir, tag, mesh, FE, QuadSn, scalar_flux, &
-                                     n_groups, refine_level, ang_flux, ang_out)
+                                     n_groups, refine_level, label, ang_flux, ang_out)
         character(len=*),      intent(in)           :: outdir, tag
         type(t_mesh_iga),      intent(in)           :: mesh
-        type(t_finite_iga),    intent(in)           :: FE
+        type(t_basis_iga),    intent(in)           :: FE
         type(t_sn_quadrature), intent(in)           :: QuadSn
         real(dp),              intent(in)           :: scalar_flux(:,:)
         integer,               intent(in)           :: n_groups, refine_level
+        character(len=*), optional, intent(in)      :: label
         real(dp), optional,    intent(in)           :: ang_flux(:,:,:)
         logical,  optional,    intent(in)           :: ang_out
 
         character(len=512) :: fpath
+        character(len=32)  :: lbl
         integer :: unit_v, g, mm, gid, ee, ii, jj, kk, n_sub_nodes, nbasis
         real(dp) :: xi_val, eta_val, zeta_val
         real(dp), allocatable :: xi_g(:), N_e(:), dRu(:), dRv(:), dRw(:)
         integer :: n_angles_export, basep
+        logical :: write_ang
+
+        lbl = "iga_fdg"
+        if (present(label)) lbl = trim(label)
+
+        ! Evaluate optional ang_out safely: Fortran .and. has no short-circuit,
+        ! so accessing an absent optional directly causes SIGSEGV.
+        write_ang = .false.
+        if (present(ang_out)) write_ang = ang_out
 
         fpath = trim(outdir) // "/" // trim(tag) // &
-                "_iga_n=" // trim(int_to_str(FE%order)) // &
+                "_" // trim(lbl) // "_p=" // trim(int_to_str(FE%order)) // &
                 "_sn=" // trim(int_to_str(QuadSn%order)) // ".vtk"
         unit_v = 102
         open(unit_v, file=trim(fpath), status='replace', action='write')
@@ -79,7 +92,7 @@ contains
         end if
 
         ! Angular flux export (shared 2D/3D path using scalar_flux evaluation pattern)
-        if (present(ang_flux) .and. ang_out) then
+        if (present(ang_flux) .and. write_ang) then
             nbasis = FE%n_basis
             n_angles_export = min(5, QuadSn%n_angles)
             if (mesh%dim == 2) then
@@ -133,6 +146,45 @@ contains
     end subroutine export_transport_vtk_iga
 
     ! ------------------------------------------------------------------
+    ! Patchwise-DG VTK output.  Remaps from patch DOF layout to element
+    ! layout then delegates to export_transport_vtk_iga.
+    ! ------------------------------------------------------------------
+    subroutine export_transport_vtk_patchiga(outdir, tag, mesh, FE, QuadSn, &
+                                              scalar_flux_patch, PD, n_groups, &
+                                              refine_level, ang_flux, ang_out)
+        character(len=*),             intent(in)           :: outdir, tag
+        type(t_mesh_iga),             intent(in)           :: mesh
+        type(t_basis_iga),           intent(in)           :: FE
+        type(t_sn_quadrature),        intent(in)           :: QuadSn
+        real(dp),                     intent(in)           :: scalar_flux_patch(:,:)
+        type(t_patch_dg), intent(in)           :: PD
+        integer,                      intent(in)           :: n_groups, refine_level
+        real(dp), optional,           intent(in)           :: ang_flux(:,:,:)
+        logical,  optional,           intent(in)           :: ang_out
+
+        real(dp), allocatable :: flux_elem(:,:)
+        integer :: ee, pp, a, pdof, nb, g
+
+        nb = PD%n_basis_patch
+        allocate(flux_elem(mesh%n_elems * FE%n_basis, n_groups))
+
+        do ee = 1, mesh%n_elems
+            pp = mesh%elem_patch_id(ee)
+            do a = 1, FE%n_basis
+                pdof = PD%elem_to_patch_dof(a, ee)
+                do g = 1, n_groups
+                    flux_elem((ee-1)*FE%n_basis + a, g) = scalar_flux_patch((pp-1)*nb + pdof, g)
+                end do
+            end do
+        end do
+
+        call export_transport_vtk_iga(outdir, tag, mesh, FE, QuadSn, flux_elem, &
+                                       n_groups, refine_level, label="iga_pdg")
+
+        deallocate(flux_elem)
+    end subroutine export_transport_vtk_patchiga
+
+    ! ------------------------------------------------------------------
     ! 2D VTK body: quad mesh, refine_level^2 nodes per element.
     ! Writes header, POINTS, CELLS, CELL_TYPES, then flux data.
     ! ------------------------------------------------------------------
@@ -140,7 +192,7 @@ contains
                                    n_groups, gid_out, flux_cg, flux_dg, write_mat, write_bc)
         integer,            intent(in)           :: unit_v, refine_level, n_groups
         type(t_mesh_iga),   intent(in)           :: mesh
-        type(t_finite_iga), intent(in)           :: FE
+        type(t_basis_iga), intent(in)           :: FE
         character(len=*),   intent(in)           :: title
         integer,            intent(out)          :: gid_out
         real(dp), optional, intent(in)           :: flux_cg(:,:), flux_dg(:,:)
@@ -274,7 +326,7 @@ contains
                                    n_groups, gid_out, flux_cg, flux_dg, write_mat, write_bc)
         integer,            intent(in)           :: unit_v, refine_level, n_groups
         type(t_mesh_iga),   intent(in)           :: mesh
-        type(t_finite_iga), intent(in)           :: FE
+        type(t_basis_iga), intent(in)           :: FE
         character(len=*),   intent(in)           :: title
         integer,            intent(out)          :: gid_out
         real(dp), optional, intent(in)           :: flux_cg(:,:), flux_dg(:,:)

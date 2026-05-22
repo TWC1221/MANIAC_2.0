@@ -3,10 +3,10 @@
 ! t_patch_iga   -- NURBS volume patch (holds knot vectors + CP connectivity)
 ! t_surface_iga -- NURBS boundary entity (surface in 3D, edge in 2D)
 ! t_mesh_iga    -- IGA mesh extending t_mesh with NURBS-specific fields
-! t_finite_iga  -- basis descriptor: orders, n_basis, face node map
+! t_basis_iga   -- NURBS/B-spline basis descriptor: orders, n_basis, face node map
 !
-! Transport precomputed data lives in t_transport_data (m_types) so it is
-! shared across IGA and FEM without duplication.
+! Transport precomputed data (t_fem_dg, t_patch_dg) lives in m_types so it
+! is shared across IGA and FEM without duplication.
 module m_types_iga
     use m_constants
     use m_types
@@ -36,18 +36,15 @@ module m_types_iga
         real(dp), allocatable :: knots_xi(:)
         real(dp), allocatable :: knots_eta(:)
         ! Surface elements — precomputed by m_asmg for 3D surfaces.
-        ! Each non-zero-measure span pair becomes one surface element.
         integer               :: n_elements = 0
-        integer,  allocatable :: elem_span_indices(:,:)  ! (2, n_elements): xi/eta span indices
-        integer,  allocatable :: elems(:,:)              ! (n_elements, n_basis): global CP IDs
+        integer,  allocatable :: elem_span_indices(:,:)  ! (2, n_elements)
+        integer,  allocatable :: elems(:,:)              ! (n_elements, n_basis)
     end type t_surface_iga
 
     ! ------------------------------------------------------------------
     ! IGA mesh, extending the common t_mesh base with NURBS-specific
     ! fields.  Common fields (dim, n_nodes, nodes, elems, etc.) are
-    ! inherited from t_mesh.  iga_surfaces holds full knot + element
-    ! data for boundary entities; base mesh%surfaces holds just cp_ids
-    ! and bc_id (sufficient for transport BC lookup).
+    ! inherited from t_mesh.
     ! ------------------------------------------------------------------
     type, extends(t_mesh) :: t_mesh_iga
         real(dp), allocatable :: weights(:)    ! (n_nodes) NURBS weights
@@ -55,7 +52,6 @@ module m_types_iga
         type(t_patch_iga),   allocatable :: patches(:)
         type(t_surface_iga), allocatable :: iga_surfaces(:)
 
-        ! Element topology — one entry per non-zero-measure knot span
         integer, allocatable :: elem_patch_id(:)
         integer, allocatable :: elem_span_indices(:,:) ! (dim, n_elems)
 
@@ -73,13 +69,13 @@ module m_types_iga
     ! NURBS/B-spline basis descriptor.
     ! Basis is evaluated on-the-fly per element (not precomputed globally).
     ! ------------------------------------------------------------------
-    type t_finite_iga
+    type t_basis_iga
         integer :: dim
         integer :: order
-        integer :: p_order, q_order, r_order  ! per-direction orders
+        integer :: p_order, q_order, r_order  ! per-direction polynomial degrees
         integer :: n_basis
         integer :: n_nodes_per_face
         integer, allocatable :: face_node_map(:,:)  ! (n_nodes_per_face, n_faces_per_elem)
-    end type t_finite_iga
+    end type t_basis_iga
 
 end module m_types_iga

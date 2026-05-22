@@ -1,4 +1,8 @@
 ! Shared derived types used across all solvers (diffusion/transport, FEM/IGA).
+!
+! Mesh hierarchy:    t_mesh  ←  t_mesh_iga  /  t_mesh_fem
+! Transport data:    t_fem_dg  (span-level DG, IGA and FEM)
+!                    t_patch_dg (patch-level DG, IGA only)
 module m_types
     use m_constants
     implicit none
@@ -23,6 +27,7 @@ module m_types
         integer :: order             = 1
         integer :: n_faces_per_elem  = 4
         integer :: n_elems           = 0
+        logical :: DG                = .false.
         real(dp), allocatable :: nodes(:,:)         ! (n_nodes, 3)
         integer,  allocatable :: elems(:,:)         ! (n_elems, n_basis)
         integer,  allocatable :: material_ids(:)
@@ -74,11 +79,12 @@ module m_types
     end type t_bc_config
 
     ! ------------------------------------------------------------------
-    ! Transport precomputed data — shared by all discretisation methods.
+    ! Span-level DG transport precomputed data.
     ! Populated by InitialiseGeometry (connectivity/normals) and
     ! InitialiseTransport (integrals, reflective map, LU factors).
+    ! Shared by IGA (span = knot-span element) and FEM.
     ! ------------------------------------------------------------------
-    type t_transport_data
+    type t_fem_dg
         ! Face topology and outward normals
         integer,  allocatable :: face_connectivity(:,:,:) ! (4, n_faces, n_elems)
         real(dp), allocatable :: face_normals(:,:,:)      ! (3, n_faces, n_elems)
@@ -98,6 +104,48 @@ module m_types
         ! Per-element-per-angle LU factors
         real(dp), allocatable :: local_lu(:,:,:,:,:)      ! (n_basis, n_basis, n_elems, n_angles, n_groups)
         integer,  allocatable :: local_pivots(:,:,:,:)    ! (n_basis, n_elems, n_angles, n_groups)
-    end type t_transport_data
+    end type t_fem_dg
+
+    ! ------------------------------------------------------------------
+    ! Patch-level DG-IGA transport precomputed data.
+    ! Each NURBS patch is one DG "element"; C^(p-1) smoothness is
+    ! retained within the patch, DG upwind coupling at patch interfaces.
+    !
+    ! DOF layout: patch pp → global DOFs (pp-1)*n_basis_patch+1 .. pp*n_basis_patch
+    ! ------------------------------------------------------------------
+    type t_patch_dg
+        integer :: n_basis_patch     ! DOFs per patch (n_cp_xi * n_cp_eta [* n_cp_zeta])
+        integer :: n_face_basis_max  ! max DOFs per patch face across all face directions
+
+        integer, allocatable :: n_face_basis_f(:)          ! (n_faces_per_patch)
+        integer, allocatable :: face_node_map_patch(:,:)   ! (n_face_basis_max, n_faces)
+        integer, allocatable :: elem_to_patch_dof(:,:)     ! (n_basis, n_elems)
+
+        ! Patch element lists (COO-style, sorted by patch)
+        integer, allocatable :: patch_elem_start(:)        ! (n_patches+1)
+        integer, allocatable :: patch_elem_list(:)         ! (n_elems)
+
+        ! Volume matrices (n_basis_patch, n_basis_patch, n_patches)
+        real(dp), allocatable :: patch_mass(:,:,:)
+        real(dp), allocatable :: patch_stiff_x(:,:,:)
+        real(dp), allocatable :: patch_stiff_y(:,:,:)
+        real(dp), allocatable :: patch_stiff_z(:,:,:)
+        real(dp), allocatable :: basis_integrals_vol(:,:)  ! (n_basis_patch, n_patches)
+
+        ! Patch-boundary face matrices (n_basis_patch, n_basis_patch, n_faces, n_patches)
+        real(dp), allocatable :: face_mass_x(:,:,:,:)
+        real(dp), allocatable :: face_mass_y(:,:,:,:)
+        real(dp), allocatable :: face_mass_z(:,:,:,:)
+
+        ! Patch-level topology
+        integer,  allocatable :: face_connectivity(:,:,:)  ! (4, n_faces, n_patches)
+        real(dp), allocatable :: face_normals(:,:,:)       ! (3, n_faces, n_patches)
+        integer,  allocatable :: upwind_idx(:,:,:)         ! (n_face_basis_max, n_faces, n_patches)
+        integer,  allocatable :: reflect_map(:,:,:)        ! (n_angles, n_faces, n_patches)
+
+        ! Per-patch-per-angle LU factors
+        real(dp), allocatable :: local_lu(:,:,:,:,:)       ! (nb, nb, n_patches, n_angles, n_groups)
+        integer,  allocatable :: local_pivots(:,:,:,:)     ! (nb, n_patches, n_angles, n_groups)
+    end type t_patch_dg
 
 end module m_types

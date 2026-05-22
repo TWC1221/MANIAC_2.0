@@ -96,8 +96,9 @@ target_link_libraries(maniac_diffusion PUBLIC
 # ---------------------------------------------------------------------------
 add_library(maniac_transport STATIC
     src/transport/m_sweep_order.F90
-    src/transport/m_precompute_iga.F90
-    src/transport/m_transport_iga.F90
+    src/transport/m_precompute_iga_fdg.F90
+    src/transport/m_precompute_iga_pdg.F90
+    src/transport/m_transport_iga_pdg.F90
     src/transport/m_precompute_fem.F90
     src/transport/m_transport_fem.F90
 )

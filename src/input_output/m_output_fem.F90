@@ -20,7 +20,7 @@ contains
                                          n_groups, refine_level, ang_flux, ang_out)
         character(len=*),      intent(in)        :: outdir, tag
         type(t_mesh_fem),      intent(in)        :: mesh
-        type(t_finite_fem),    intent(in)        :: FE
+        type(t_basis_fem),    intent(in)        :: FE
         type(t_sn_quadrature), intent(in)        :: QuadSn
         real(dp),              intent(in)        :: scalar_flux(:,:)
         integer,               intent(in)        :: n_groups, refine_level
@@ -62,7 +62,7 @@ contains
                                       n_groups, gid_out, flux_dg)
         integer,            intent(in)           :: unit_v, refine_level, n_groups
         type(t_mesh_fem),   intent(in)           :: mesh
-        type(t_finite_fem), intent(in)           :: FE
+        type(t_basis_fem), intent(in)           :: FE
         character(len=*),   intent(in)           :: title
         integer,            intent(out)          :: gid_out
         real(dp), optional, intent(in)           :: flux_dg(:,:)
@@ -176,7 +176,7 @@ contains
                                       n_groups, gid_out, flux_dg)
         integer,            intent(in)           :: unit_v, refine_level, n_groups
         type(t_mesh_fem),   intent(in)           :: mesh
-        type(t_finite_fem), intent(in)           :: FE
+        type(t_basis_fem), intent(in)           :: FE
         character(len=*),   intent(in)           :: title
         integer,            intent(out)          :: gid_out
         real(dp), optional, intent(in)           :: flux_dg(:,:)
@@ -286,7 +286,7 @@ contains
     subroutine write_ang_flux_fem(unit_v, mesh, FE, QuadSn, ang_flux, n_groups, refine_level)
         integer,               intent(in) :: unit_v, n_groups, refine_level
         type(t_mesh_fem),      intent(in) :: mesh
-        type(t_finite_fem),    intent(in) :: FE
+        type(t_basis_fem),    intent(in) :: FE
         type(t_sn_quadrature), intent(in) :: QuadSn
         real(dp),              intent(in) :: ang_flux(:,:,:)
 
@@ -340,7 +340,7 @@ contains
     subroutine export_diffusion_vtk_fem(outdir, tag, mesh, FE, phi, n_groups, refine_level)
         character(len=*),   intent(in) :: outdir, tag
         type(t_mesh_fem),   intent(in) :: mesh
-        type(t_finite_fem), intent(in) :: FE
+        type(t_basis_fem), intent(in) :: FE
         real(dp),           intent(in) :: phi(:,:)
         integer,            intent(in) :: n_groups, refine_level
 

@@ -114,6 +114,7 @@ contains
                 if (index(line,'PolyOrder') > 0) read(line(pos+1:),*,iostat=ios) mesh%order
                 if (index(line,'Groups')    > 0) read(line(pos+1:),*,iostat=ios) mesh%n_groups
                 if (index(line,'Dims')      > 0) read(line(pos+1:),*,iostat=ios) mesh%dim
+                if (index(line,'DG')        > 0) read(line(pos+1:),*,iostat=ios) mesh%DG
                 if (index(line,'KnotVector') > 0) then
                     read(line(pos+1:),*,iostat=ios) k
                     if (ios == 0 .and. k > max_k) max_k = k

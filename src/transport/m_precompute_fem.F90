@@ -1,8 +1,8 @@
 ! Transport integral precomputation, geometry, and LU factorisation for FEM meshes.
 ! Supports 2D (quad, 4 faces) and 3D (hex, 6 faces), all polynomial orders.
-! Lagrange basis arrays are precomputed in t_finite_fem by InitialiseBasisFEM;
+! Lagrange basis arrays are precomputed in t_basis_fem by InitialiseBasisFEM;
 ! this module assembles the element/face integrals, connectivity, normals,
-! and per-angle LU factors into t_transport_data (TD).
+! and per-angle LU factors into t_fem_dg (TD).
 !
 ! FEM meshes are read via read_asmg_mesh into t_mesh_iga.  Each ASMG patch
 ! is a single element (trivial knot vectors).  There is no intra-patch span
@@ -50,11 +50,11 @@ contains
     ! ------------------------------------------------------------------
     subroutine InitialiseTransport_FEM(mesh, FE, sn_quad, QuadVol, QuadFace, materials, TD)
         type(t_mesh_fem),      intent(in)    :: mesh
-        type(t_finite_fem),    intent(in)    :: FE
+        type(t_basis_fem),    intent(in)    :: FE
         type(t_sn_quadrature), intent(in)    :: sn_quad
         type(t_quadrature),    intent(in)    :: QuadVol, QuadFace
         type(t_material),      intent(in)    :: materials(:)
-        type(t_transport_data), intent(inout) :: TD
+        type(t_fem_dg), intent(inout) :: TD
 
         call precompute_integrals_fem(mesh, FE, QuadVol, QuadFace, TD)
         call precompute_reflective_map(mesh%n_elems, mesh%n_faces_per_elem, &
@@ -67,10 +67,10 @@ contains
     ! ------------------------------------------------------------------
     subroutine InitialiseGeometry_FEM(mesh, FE, QuadSn, QuadFace, TD, sweep_order)
         type(t_mesh_fem),      intent(in)    :: mesh
-        type(t_finite_fem),    intent(in)    :: FE
+        type(t_basis_fem),    intent(in)    :: FE
         type(t_sn_quadrature), intent(in)    :: QuadSn
         type(t_quadrature),    intent(in)    :: QuadFace
-        type(t_transport_data), intent(inout) :: TD
+        type(t_fem_dg), intent(inout) :: TD
         integer, allocatable,  intent(out)   :: sweep_order(:,:)
 
         integer :: mm
@@ -97,9 +97,9 @@ contains
     ! ------------------------------------------------------------------
     subroutine connectivity_and_normals_fem(mesh, FE, QuadFace, TD)
         type(t_mesh_fem),      intent(in)    :: mesh
-        type(t_finite_fem),    intent(in)    :: FE
+        type(t_basis_fem),    intent(in)    :: FE
         type(t_quadrature),    intent(in)    :: QuadFace
-        type(t_transport_data), intent(inout) :: TD
+        type(t_fem_dg), intent(inout) :: TD
 
         integer  :: ee, e1, e2, f, f1, f2, q, s_idx, n_pts, orient_val
         real(dp) :: nodes(FE%n_basis, 3)
@@ -251,9 +251,9 @@ contains
     ! ------------------------------------------------------------------
     subroutine precompute_integrals_fem(mesh, FE, QuadVol, QuadFace, TD)
         type(t_mesh_fem),      intent(in)    :: mesh
-        type(t_finite_fem),    intent(in)    :: FE
+        type(t_basis_fem),    intent(in)    :: FE
         type(t_quadrature),    intent(in)    :: QuadVol, QuadFace
-        type(t_transport_data), intent(inout) :: TD
+        type(t_fem_dg), intent(inout) :: TD
 
         integer  :: ee, q, f, nf
         real(dp) :: nodes(FE%n_basis, 3)
@@ -371,11 +371,11 @@ contains
     ! ------------------------------------------------------------------
     subroutine precompute_lu_fem(mesh, FE, sn_quad, materials, n_groups, TD)
         type(t_mesh_fem),      intent(in)    :: mesh
-        type(t_finite_fem),    intent(in)    :: FE
+        type(t_basis_fem),    intent(in)    :: FE
         type(t_sn_quadrature), intent(in)    :: sn_quad
         type(t_material),      intent(in)    :: materials(:)
         integer,               intent(in)    :: n_groups
-        type(t_transport_data), intent(inout) :: TD
+        type(t_fem_dg), intent(inout) :: TD
 
         integer  :: ee, mm, g, f, info
         real(dp) :: A(FE%n_basis, FE%n_basis), dir(3), o_n
@@ -409,6 +409,7 @@ contains
                 do g = 1, n_groups
                     A = materials(mesh%material_ids(ee))%SigmaT(g) * &
                         TD%elem_mass_matrix(:,:,ee) + StiffOut
+ 
                     call dgetrf(FE%n_basis, FE%n_basis, A, FE%n_basis, &
                                 TD%local_pivots(:,ee,mm,g), info)
                     if (info /= 0) then
@@ -426,7 +427,7 @@ contains
     ! Used for face normal and face integral computations.
     ! ------------------------------------------------------------------
     subroutine eval_fem_2d_at(FE, xi, eta, coords2d, N, J)
-        type(t_finite_fem), intent(in)  :: FE
+        type(t_basis_fem), intent(in)  :: FE
         real(dp),           intent(in)  :: xi, eta, coords2d(:,:)
         real(dp),           intent(out) :: N(:), J(2,2)
         real(dp) :: dN_dxi(FE%n_basis), dN_deta(FE%n_basis)
@@ -436,7 +437,7 @@ contains
     end subroutine eval_fem_2d_at
 
     subroutine eval_fem_3d_at(FE, xi, eta, zeta, coords3d, N, dN_dx, dN_dy, dN_dz, J)
-        type(t_finite_fem), intent(in)  :: FE
+        type(t_basis_fem), intent(in)  :: FE
         real(dp),           intent(in)  :: xi, eta, zeta, coords3d(:,:)
         real(dp),           intent(out) :: N(:), dN_dx(:), dN_dy(:), dN_dz(:), J(3,3)
         real(dp) :: dN_dxi(FE%n_basis), dN_deta(FE%n_basis), dN_dzeta(FE%n_basis)
@@ -465,11 +466,20 @@ contains
     ! ------------------------------------------------------------------
     integer function face_orient_fem(mesh, FE, e1, f1, e2, f2) result(orient)
         type(t_mesh_fem),   intent(in) :: mesh
-        type(t_finite_fem), intent(in) :: FE
+        type(t_basis_fem), intent(in) :: FE
         integer,            intent(in) :: e1, f1, e2, f2
         integer :: first_node_e1
         first_node_e1 = mesh%elems(e1, FE%face_node_map(1, f1))
         orient = merge(1, -1, mesh%elems(e2, FE%face_node_map(1, f2)) == first_node_e1)
     end function face_orient_fem
+
+    subroutine print_matrix(M, n)
+        real(dp), intent(in) :: M(:,:)
+        integer,  intent(in) :: n
+        integer :: i
+        do i = 1, n
+            write(*,'(*(F10.5,1X))') M(i, 1:n)
+        end do
+    end subroutine print_matrix
 
 end module m_transport_precompute_fem

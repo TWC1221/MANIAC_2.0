@@ -23,9 +23,9 @@ module m_transport_fem
     ! private callback wrappers below.
     ! ------------------------------------------------------------------
     type(t_mesh_fem),      pointer, save :: s_mesh    => null()
-    type(t_finite_fem),    pointer, save :: s_FE      => null()
+    type(t_basis_fem),    pointer, save :: s_FE      => null()
     type(t_sn_quadrature), pointer, save :: s_sn_quad => null()
-    type(t_transport_data), pointer, save :: s_TD      => null()
+    type(t_fem_dg), pointer, save :: s_TD      => null()
     type(t_material),      pointer, save :: s_mats(:) => null()
     real(dp), allocatable, save          :: s_ang_flux(:,:,:)
     integer,  allocatable, save          :: s_sweep_order(:,:)
@@ -49,9 +49,9 @@ contains
     subroutine Transport_Sweep_FEM(mesh, FE, sn_quad, TD, ang_flux, scalar_flux, &
                                     total_source, sweep_order, ref_ID)
         type(t_mesh_fem),      intent(in)    :: mesh
-        type(t_finite_fem),    intent(in)    :: FE
+        type(t_basis_fem),    intent(in)    :: FE
         type(t_sn_quadrature), intent(in)    :: sn_quad
-        type(t_transport_data), intent(in)    :: TD
+        type(t_fem_dg), intent(in)    :: TD
         real(dp),              intent(inout) :: ang_flux(:,:,:), scalar_flux(:,:)
         real(dp),              intent(in)    :: total_source(:,:)
         integer,               intent(in)    :: sweep_order(:,:), ref_ID(:)
@@ -138,8 +138,8 @@ contains
         real(dp),              intent(in)    :: k_eff
         type(t_material),      intent(in)    :: materials(:)
         type(t_mesh_fem),      intent(in)    :: mesh
-        type(t_finite_fem),    intent(in)    :: FE
-        type(t_transport_data), intent(in)    :: TD
+        type(t_basis_fem),    intent(in)    :: FE
+        type(t_fem_dg), intent(in)    :: TD
         integer,               intent(in)    :: n_groups
         logical,               intent(in)    :: is_adjoint, is_eigenvalue
 
@@ -189,8 +189,8 @@ contains
         real(dp),              intent(in)  :: scalar_flux(:,:)
         type(t_material),      intent(in)  :: materials(:)
         type(t_mesh_fem),      intent(in)  :: mesh
-        type(t_finite_fem),    intent(in)  :: FE
-        type(t_transport_data), intent(in)  :: TD
+        type(t_basis_fem),    intent(in)  :: FE
+        type(t_fem_dg), intent(in)  :: TD
         logical,               intent(in)  :: is_adjoint
 
         integer :: g, ee, mat_id, idx_start, idx_end
@@ -221,9 +221,9 @@ contains
                                    is_adjoint, is_eigenvalue)
         type(t_mesh_fem),      intent(in),    target :: mesh
         type(t_material),      intent(in),    target :: materials(:)
-        type(t_finite_fem),    intent(in),    target :: FE
+        type(t_basis_fem),    intent(in),    target :: FE
         type(t_sn_quadrature), intent(in),    target :: sn_quad
-        type(t_transport_data), intent(in),    target :: TD
+        type(t_fem_dg), intent(in),    target :: TD
         real(dp), allocatable, intent(out)           :: scalar_flux(:,:)
         real(dp), allocatable, intent(out)           :: ang_flux_out(:,:,:)
         real(dp),              intent(out)           :: k_eff

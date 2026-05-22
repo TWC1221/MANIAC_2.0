@@ -1,6 +1,6 @@
 ! Lagrange basis functions for FEM (2D and 3D).
 ! Basis is precomputed once on the reference element [-1,1]^d and stored
-! in t_finite_fem.  GetMapping routines then index into these arrays by
+! in t_basis_fem.  GetMapping routines then index into these arrays by
 ! quadrature point, avoiding per-element basis evaluation.
 !
 ! Face numbering and face_node_map ordering match m_basis_iga exactly so
@@ -9,7 +9,7 @@
 !   3D:  Face 1 z=-1,  Face 2 z=+1,  Face 3 y=-1,  Face 4 y=+1,  Face 5 x=-1,  Face 6 x=+1
 !
 ! Public:
-!   InitialiseBasisFEM   -- set up t_finite_fem and precompute all arrays
+!   InitialiseBasisFEM   -- set up t_basis_fem and precompute all arrays
 !   GetMapping2D_FEM     -- Lagrange Jacobian + physical gradients (2D element)
 !   GetMapping3D_FEM     -- Lagrange Jacobian + physical gradients (3D element)
 !   EvalLagrange1D       -- evaluate 1D basis at arbitrary xi (2D boundary edge)
@@ -28,12 +28,12 @@ module m_basis_fem
 contains
 
     ! ------------------------------------------------------------------
-    ! Initialise t_finite_fem for a mesh of given dim and polynomial order.
+    ! Initialise t_basis_fem for a mesh of given dim and polynomial order.
     ! Builds equispaced Lagrange nodes, face_node_map, then precomputes
     ! basis and gradient arrays at all volume and face quadrature points.
     ! ------------------------------------------------------------------
     subroutine InitialiseLagrangeBasis(FE, dim, order, QuadVol, QuadFace)
-        type(t_finite_fem), intent(inout) :: FE
+        type(t_basis_fem), intent(inout) :: FE
         integer,            intent(in)    :: dim, order
         type(t_quadrature), intent(in)    :: QuadVol, QuadFace
 
@@ -206,7 +206,7 @@ contains
     !   elem_coords -- (n_basis, 2) physical node coordinates
     ! ------------------------------------------------------------------
     subroutine GetMapping2D_FEM(FE, q, elem_coords, dN_dx, dN_dy, detJ, N_basis, N_mat, J_out)
-        type(t_finite_fem), intent(in)  :: FE
+        type(t_basis_fem), intent(in)  :: FE
         integer,            intent(in)  :: q
         real(dp),           intent(in)  :: elem_coords(:,:)
         real(dp),           intent(out) :: dN_dx(:), dN_dy(:), detJ, N_basis(:)
@@ -243,7 +243,7 @@ contains
     ! 3D Lagrange Jacobian mapping for a hex element.
     ! ------------------------------------------------------------------
     subroutine GetMapping3D_FEM(FE, q, elem_coords, dN_dx, dN_dy, dN_dz, detJ, N_basis, J_out)
-        type(t_finite_fem), intent(in)  :: FE
+        type(t_basis_fem), intent(in)  :: FE
         integer,            intent(in)  :: q
         real(dp),           intent(in)  :: elem_coords(:,:)
         real(dp),           intent(out) :: dN_dx(:), dN_dy(:), dN_dz(:), detJ, N_basis(:)
@@ -287,7 +287,7 @@ contains
     ! Used for 2D boundary edge integration.
     ! ------------------------------------------------------------------
     subroutine EvalLagrange1D(FE, xi, N, dN_dxi)
-        type(t_finite_fem), intent(in)  :: FE
+        type(t_basis_fem), intent(in)  :: FE
         real(dp),           intent(in)  :: xi
         real(dp),           intent(out) :: N(:), dN_dxi(:)
         integer :: i
@@ -302,7 +302,7 @@ contains
     ! Used for postprocessing and 3D boundary face integration.
     ! ------------------------------------------------------------------
     subroutine EvalLagrange2D(FE, xi, eta, N, dN_dxi, dN_deta)
-        type(t_finite_fem), intent(in)  :: FE
+        type(t_basis_fem), intent(in)  :: FE
         real(dp),           intent(in)  :: xi, eta
         real(dp),           intent(out) :: N(:), dN_dxi(:), dN_deta(:)
         integer  :: i, j, idx
@@ -328,7 +328,7 @@ contains
     ! Used for VTK postprocessing (arbitrary reference coordinates).
     ! ------------------------------------------------------------------
     subroutine EvalLagrange3D(FE, xi, eta, zeta, N, dN_dxi, dN_deta, dN_dzeta)
-        type(t_finite_fem), intent(in)  :: FE
+        type(t_basis_fem), intent(in)  :: FE
         real(dp),           intent(in)  :: xi, eta, zeta
         real(dp),           intent(out) :: N(:), dN_dxi(:), dN_deta(:), dN_dzeta(:)
         integer  :: i, j, k, idx
@@ -358,7 +358,7 @@ contains
     ! i-th 1D Lagrange basis function at xi, using node_roots.
     ! ------------------------------------------------------------------
     pure real(dp) function Lagrange1D(FE, i, xi)
-        type(t_finite_fem), intent(in) :: FE
+        type(t_basis_fem), intent(in) :: FE
         integer,            intent(in) :: i
         real(dp),           intent(in) :: xi
         integer  :: p
@@ -374,7 +374,7 @@ contains
     ! Derivative of the i-th 1D Lagrange basis function at xi.
     ! ------------------------------------------------------------------
     pure real(dp) function dLagrange1D(FE, i, xi)
-        type(t_finite_fem), intent(in) :: FE
+        type(t_basis_fem), intent(in) :: FE
         integer,            intent(in) :: i
         real(dp),           intent(in) :: xi
         integer  :: p, q
