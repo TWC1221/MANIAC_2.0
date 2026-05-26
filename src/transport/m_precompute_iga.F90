@@ -281,7 +281,7 @@ contains
         type(t_patch_dg),      intent(inout) :: PD
 
         integer  :: pp, mm, g, f, info, mat_id, ee_rep, nb, nf
-        real(dp) :: dir(3)
+        real(dp) :: dir(3), o_n
         real(dp) :: Stiff(PD%n_basis_patch, PD%n_basis_patch)
         real(dp) :: A    (PD%n_basis_patch, PD%n_basis_patch)
 
@@ -298,16 +298,26 @@ contains
         allocate(PD%local_lu    (nb, nb, n_patches, sn_quad%n_angles, n_groups))
         allocate(PD%local_pivots(nb,     n_patches, sn_quad%n_angles, n_groups))
 
-        !$OMP PARALLEL DO PRIVATE(mm, dir, pp, Stiff, ee_rep, mat_id, f, g, A, info)
+        !$OMP PARALLEL DO PRIVATE(mm, dir, pp, Stiff, ee_rep, mat_id, f, o_n, g, A, info)
         do mm = 1, sn_quad%n_angles
             dir = sn_quad%dirs(mm, 1:3)
             do pp = 1, n_patches
                 Stiff = -(dir(1)*PD%patch_stiff_x(:,:,pp) + &
                            dir(2)*PD%patch_stiff_y(:,:,pp) + &
                            dir(3)*PD%patch_stiff_z(:,:,pp))
-                do f = 1, nf
-                    Stiff = Stiff + PD%face_mass_out(:,:,f,pp,mm)
-                end do
+                if (PD%matrix_free) then
+                    do f = 1, nf
+                        o_n = dot_product(dir, PD%face_normals(:,f,pp))
+                        if (o_n > 0.0_dp) &
+                            Stiff = Stiff + dir(1)*PD%face_mass_x(:,:,f,pp) + &
+                                            dir(2)*PD%face_mass_y(:,:,f,pp) + &
+                                            dir(3)*PD%face_mass_z(:,:,f,pp)
+                    end do
+                else
+                    do f = 1, nf
+                        Stiff = Stiff + PD%face_mass_out(:,:,f,pp,mm)
+                    end do
+                end if
                 ee_rep = PD%patch_elem_list(PD%patch_elem_start(pp))
                 mat_id = mesh%material_ids(ee_rep)
                 do g = 1, n_groups
@@ -370,25 +380,33 @@ contains
         allocate(PD%upwind_idx(FE%n_nodes_per_face, nf, mesh%n_elems), source=TD%upwind_idx)
         allocate(PD%reflect_map(sn_quad%n_angles, nf, mesh%n_elems), source=TD%reflect_map)
 
-        allocate(PD%face_mass_out(nb, nb, nf, mesh%n_elems, sn_quad%n_angles), source=0.0_dp)
-        allocate(PD%face_mass_in (nb, nb, nf, mesh%n_elems, sn_quad%n_angles), source=0.0_dp)
-        do mm = 1, sn_quad%n_angles
-            dir = sn_quad%dirs(mm,:)
-            do ee = 1, mesh%n_elems
-                do f = 1, nf
-                    o_n = dot_product(dir, TD%face_normals(:,f,ee))
-                    if (o_n >= 0.0_dp) then
-                        PD%face_mass_out(:,:,f,ee,mm) = dir(1)*TD%face_mass_x(:,:,f,ee) + &
-                                                         dir(2)*TD%face_mass_y(:,:,f,ee) + &
-                                                         dir(3)*TD%face_mass_z(:,:,f,ee)
-                    else
-                        PD%face_mass_in(:,:,f,ee,mm)  = dir(1)*TD%face_mass_x(:,:,f,ee) + &
-                                                         dir(2)*TD%face_mass_y(:,:,f,ee) + &
-                                                         dir(3)*TD%face_mass_z(:,:,f,ee)
-                    end if
+        if (PD%matrix_free) then
+            ! Mode 2: keep angle-independent components; compute dir·face_mass inline in sweep
+            allocate(PD%face_mass_x(nb, nb, nf, mesh%n_elems), source=TD%face_mass_x)
+            allocate(PD%face_mass_y(nb, nb, nf, mesh%n_elems), source=TD%face_mass_y)
+            allocate(PD%face_mass_z(nb, nb, nf, mesh%n_elems), source=TD%face_mass_z)
+        else
+            ! Full precompute: per-angle per-span inflow/outflow split
+            allocate(PD%face_mass_out(nb, nb, nf, mesh%n_elems, sn_quad%n_angles), source=0.0_dp)
+            allocate(PD%face_mass_in (nb, nb, nf, mesh%n_elems, sn_quad%n_angles), source=0.0_dp)
+            do mm = 1, sn_quad%n_angles
+                dir = sn_quad%dirs(mm,:)
+                do ee = 1, mesh%n_elems
+                    do f = 1, nf
+                        o_n = dot_product(dir, TD%face_normals(:,f,ee))
+                        if (o_n >= 0.0_dp) then
+                            PD%face_mass_out(:,:,f,ee,mm) = dir(1)*TD%face_mass_x(:,:,f,ee) + &
+                                                             dir(2)*TD%face_mass_y(:,:,f,ee) + &
+                                                             dir(3)*TD%face_mass_z(:,:,f,ee)
+                        else
+                            PD%face_mass_in(:,:,f,ee,mm)  = dir(1)*TD%face_mass_x(:,:,f,ee) + &
+                                                             dir(2)*TD%face_mass_y(:,:,f,ee) + &
+                                                             dir(3)*TD%face_mass_z(:,:,f,ee)
+                        end if
+                    end do
                 end do
             end do
-        end do
+        end if
     end subroutine promote_spans_to_patches
 
     ! ==================================================================

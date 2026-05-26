@@ -118,6 +118,7 @@ module m_types
     type t_patch_dg
         integer :: n_basis_patch     ! DOFs per patch (n_cp_xi * n_cp_eta [* n_cp_zeta])
         integer :: n_face_basis_max  ! max DOFs per patch face across all face directions
+        logical :: matrix_free = .false.  ! skip face_mass_out/in; use face_mass_x/y/z inline
 
         integer, allocatable :: n_face_basis_f(:)          ! (n_faces_per_patch)
         integer, allocatable :: face_node_map_patch(:,:)   ! (n_face_basis_max, n_faces)
@@ -136,8 +137,15 @@ module m_types
 
         ! Direction-applied face matrices split by inflow/outflow per angle, per span
         ! (n_basis_patch, n_basis_patch, n_faces, n_patches, n_angles)
+        ! Allocated in full-precompute mode (matrix_free = .false.)
         real(dp), allocatable :: face_mass_out(:,:,:,:,:)  ! Ω·n≥0 spans → LU stiffness
         real(dp), allocatable :: face_mass_in (:,:,:,:,:)  ! Ω·n<0 spans → sweep RHS
+
+        ! Angle-independent face matrices — allocated in matrix-free mode (FDG only)
+        ! (n_basis_patch, n_basis_patch, n_faces, n_patches)
+        real(dp), allocatable :: face_mass_x(:,:,:,:)
+        real(dp), allocatable :: face_mass_y(:,:,:,:)
+        real(dp), allocatable :: face_mass_z(:,:,:,:)
 
         ! Patch-level topology
         integer,  allocatable :: face_connectivity(:,:,:)  ! (4, n_faces, n_patches)

@@ -61,10 +61,11 @@ contains
 
         integer  :: mm, ee, pp, g, f, info, k
         integer  :: j_f, local_dof, m_ref, n_face
-        real(dp) :: w_mm
+        real(dp) :: w_mm, dir(3), o_n
         integer  :: idx_start, idx_end, nb
         real(dp) :: b(PD%n_basis_patch)
         real(dp) :: upwind_flux(PD%n_face_basis_max)
+        real(dp) :: fm(PD%n_basis_patch, PD%n_basis_patch)
         real(dp), allocatable :: ang_flux_snap(:,:,:)
 
         nb = PD%n_basis_patch
@@ -77,10 +78,11 @@ contains
         if (size(ref_ID) > 0) allocate(ang_flux_snap, source=ang_flux)
 
         !$OMP PARALLEL DO &
-        !$OMP& PRIVATE(mm, w_mm, ee, pp, idx_start, idx_end, f, &
-        !$OMP&          g, b, n_face, j_f, local_dof, m_ref, info, k, upwind_flux)
+        !$OMP& PRIVATE(mm, w_mm, dir, o_n, ee, pp, idx_start, idx_end, f, &
+        !$OMP&          g, b, n_face, j_f, local_dof, m_ref, info, k, upwind_flux, fm)
         do mm = 1, sn_quad%n_angles
             w_mm = sn_quad%weights(mm)
+            if (PD%matrix_free) dir = sn_quad%dirs(mm, :)
 
             do ee = 1, size(sweep_order, 1)
                 pp        = sweep_order(ee, mm)
@@ -90,30 +92,58 @@ contains
                 do g = 1, mesh%n_groups
                     b = total_source(idx_start:idx_end, g)
 
-                    do f = 1, mesh%n_faces_per_elem
-                        n_face = PD%n_face_basis_f(f)
-                        if (PD%face_connectivity(1,f,pp) > 0) then
-                            ! Interior face: gather upwind flux from neighbor patch
+                    if (PD%matrix_free) then
+                        do f = 1, mesh%n_faces_per_elem
+                            o_n = dot_product(dir, PD%face_normals(:,f,pp))
+                            if (o_n >= 0.0_dp) cycle  ! outflow
+                            n_face = PD%n_face_basis_f(f)
+                            if (PD%face_connectivity(1,f,pp) > 0) then
+                                do j_f = 1, n_face
+                                    upwind_flux(j_f) = ang_flux(PD%upwind_idx(j_f,f,pp), mm, g)
+                                end do
+                            else if (PD%face_connectivity(4,f,pp) > 0 .and. &
+                                     any(PD%face_connectivity(4,f,pp) == ref_ID)) then
+                                m_ref = PD%reflect_map(mm, f, pp)
+                                do j_f = 1, n_face
+                                    local_dof = idx_start - 1 + PD%face_node_map_patch(j_f, f)
+                                    upwind_flux(j_f) = ang_flux_snap(local_dof, m_ref, g)
+                                end do
+                            else
+                                cycle  ! vacuum
+                            end if
+                            fm = dir(1)*PD%face_mass_x(:,:,f,pp) + &
+                                 dir(2)*PD%face_mass_y(:,:,f,pp) + &
+                                 dir(3)*PD%face_mass_z(:,:,f,pp)
                             do j_f = 1, n_face
-                                upwind_flux(j_f) = ang_flux(PD%upwind_idx(j_f,f,pp), mm, g)
+                                b = b - upwind_flux(j_f) * fm(:, PD%face_node_map_patch(j_f,f))
                             end do
-                        else if (PD%face_connectivity(4,f,pp) > 0 .and. &
-                                 any(PD%face_connectivity(4,f,pp) == ref_ID)) then
-                            ! Reflective BC — read from snapshot to avoid OMP race
-                            m_ref = PD%reflect_map(mm, f, pp)
-                            do j_f = 1, n_face
-                                local_dof = idx_start - 1 + PD%face_node_map_patch(j_f, f)
-                                upwind_flux(j_f) = ang_flux_snap(local_dof, m_ref, g)
-                            end do
-                        else
-                            cycle  ! vacuum: zero upwind flux, no contribution
-                        end if
-                        ! face_mass_in is zero for outflow spans, so this is always safe
-                        do j_f = 1, n_face
-                            b = b - upwind_flux(j_f) * &
-                                    PD%face_mass_in(:, PD%face_node_map_patch(j_f,f), f, pp, mm)
                         end do
-                    end do
+                    else
+                        do f = 1, mesh%n_faces_per_elem
+                            n_face = PD%n_face_basis_f(f)
+                            if (PD%face_connectivity(1,f,pp) > 0) then
+                                ! Interior face: gather upwind flux from neighbor patch
+                                do j_f = 1, n_face
+                                    upwind_flux(j_f) = ang_flux(PD%upwind_idx(j_f,f,pp), mm, g)
+                                end do
+                            else if (PD%face_connectivity(4,f,pp) > 0 .and. &
+                                     any(PD%face_connectivity(4,f,pp) == ref_ID)) then
+                                ! Reflective BC — read from snapshot to avoid OMP race
+                                m_ref = PD%reflect_map(mm, f, pp)
+                                do j_f = 1, n_face
+                                    local_dof = idx_start - 1 + PD%face_node_map_patch(j_f, f)
+                                    upwind_flux(j_f) = ang_flux_snap(local_dof, m_ref, g)
+                                end do
+                            else
+                                cycle  ! vacuum: zero upwind flux, no contribution
+                            end if
+                            ! face_mass_in is zero for outflow spans, so this is always safe
+                            do j_f = 1, n_face
+                                b = b - upwind_flux(j_f) * &
+                                        PD%face_mass_in(:, PD%face_node_map_patch(j_f,f), f, pp, mm)
+                            end do
+                        end do
+                    end if
 
                     call dgetrs('N', nb, 1, PD%local_lu(:,:,pp,mm,g), nb, &
                                 PD%local_pivots(:,pp,mm,g), b, nb, info)

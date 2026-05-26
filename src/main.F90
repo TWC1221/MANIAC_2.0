@@ -46,12 +46,13 @@ program maniac
     logical            :: is_adjoint     = .false.
     logical            :: ang_out        = .false.
     logical            :: patch_dg       = .false.
+    logical            :: matrix_free    = .false.
     integer            :: ref_ids(8)     = 0
     integer            :: n_ref_ids      = 0
 
     namelist /maniac_config/ solver, mesh_file, mat_file, output_dir, &
         sn_order, max_outer, solver_type, preconditioner, vtk_refine, &
-        tol, is_eigenvalue, is_adjoint, ang_out, patch_dg, ref_ids, n_ref_ids
+        tol, is_eigenvalue, is_adjoint, ang_out, patch_dg, matrix_free, ref_ids, n_ref_ids
 
     ! ---- Common objects -----------------------------------------------
     type(t_material), allocatable :: mats(:)
@@ -206,6 +207,7 @@ program maniac
                                                     mesh_iga%n_groups, vtk_refine, &
                                                     ang_flux=ang_flux, ang_out=ang_out)
             else
+                PD%matrix_free = matrix_free
                 call InitialiseTransport_SpanDG(mesh_iga, FE_iga, QuadSn, QuadVol, QuadFace, &
                                                  mats, PD, sweep_order)
                 call SolveTransport_IGA(mesh_iga, mats, QuadSn, PD, &
