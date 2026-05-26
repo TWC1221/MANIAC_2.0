@@ -52,7 +52,6 @@ target_link_libraries(maniac_core PUBLIC MPI::MPI_Fortran)
 # IGA layer
 # ---------------------------------------------------------------------------
 add_library(maniac_iga STATIC
-    src/iga/m_types_iga.F90
     src/iga/m_basis_iga.F90
 )
 set_target_properties(maniac_iga PROPERTIES Fortran_PREPROCESS ON)
@@ -62,7 +61,6 @@ target_link_libraries(maniac_iga PUBLIC maniac_core)
 # FEM layer
 # ---------------------------------------------------------------------------
 add_library(maniac_fem STATIC
-    src/fem/m_types_fem.F90
     src/fem/m_basis_fem.F90
 )
 set_target_properties(maniac_fem PROPERTIES Fortran_PREPROCESS ON)
@@ -96,8 +94,7 @@ target_link_libraries(maniac_diffusion PUBLIC
 # ---------------------------------------------------------------------------
 add_library(maniac_transport STATIC
     src/transport/m_sweep_order.F90
-    src/transport/m_precompute_iga_fdg.F90
-    src/transport/m_precompute_iga_pdg.F90
+    src/transport/m_precompute_iga.F90
     src/transport/m_transport_iga_pdg.F90
     src/transport/m_precompute_fem.F90
     src/transport/m_transport_fem.F90
