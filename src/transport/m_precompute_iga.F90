@@ -389,6 +389,7 @@ contains
             ! Full precompute: per-angle per-span inflow/outflow split
             allocate(PD%face_mass_out(nb, nb, nf, mesh%n_elems, sn_quad%n_angles), source=0.0_dp)
             allocate(PD%face_mass_in (nb, nb, nf, mesh%n_elems, sn_quad%n_angles), source=0.0_dp)
+            !$OMP PARALLEL DO PRIVATE(mm, dir, ee, f, o_n)
             do mm = 1, sn_quad%n_angles
                 dir = sn_quad%dirs(mm,:)
                 do ee = 1, mesh%n_elems
@@ -406,6 +407,7 @@ contains
                     end do
                 end do
             end do
+            !$OMP END PARALLEL DO
         end if
     end subroutine promote_spans_to_patches
 

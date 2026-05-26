@@ -4,7 +4,7 @@
     solver         = "transport"
 
     ! Mesh and material files (paths relative to the executable location)
-    mesh_file      = "input/supercell_test.asmg"
+    mesh_file      = "input/circle.asmg"
     mat_file       = "input/MATS.txt"
     output_dir     = "output"
 
