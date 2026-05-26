@@ -12,25 +12,22 @@
 program maniac
     use m_constants
     use m_types
-    use m_types_iga
     use m_utilities
     use m_quadrature, only: LinearQuadrature, QuadrilateralQuadrature, &
                              HexahedralQuadrature, AngularQuadrature
     use m_material
-    use m_asmg,                     only: read_asmg_mesh, write_mesh_to_files, detect_mesh_type
-    use m_basis_iga,                only: InitialiseNurbsBasis
-    use m_types_fem
-    use m_basis_fem,                only: InitialiseLagrangeBasis
-    use m_transport_precompute_iga,     only: InitialiseTransport_SpanDG
-    use m_transport_precompute_fem,     only: InitialiseTransport_FEM, InitialiseGeometry_FEM
-    use m_transport_precompute_patchdg, only: InitialiseTransport_PatchDG
-    use m_transport_iga,                only: SolveTransport_IGA
-    use m_transport_fem,                only: SolveTransport_FEM
-    use m_diffusion_iga,                only: SolveDiffusion
-    use m_diffusion_fem,                only: SolveDiffusion_FEM
-    use m_output_iga,                   only: export_transport_vtk_iga, export_diffusion_vtk_iga, &
-                                              export_transport_vtk_patchiga
-    use m_output_fem,                   only: export_transport_vtk_fem, export_diffusion_vtk_fem
+    use m_asmg,                    only: read_asmg_mesh, write_mesh_to_files, detect_mesh_type
+    use m_basis_iga,               only: InitialiseNurbsBasis
+    use m_basis_fem,               only: InitialiseLagrangeBasis
+    use m_transport_precompute_iga, only: InitialiseTransport_SpanDG, InitialiseTransport_PatchDG
+    use m_transport_precompute_fem, only: InitialiseTransport_FEM, InitialiseGeometry_FEM
+    use m_transport_iga_pdg,        only: SolveTransport_IGA
+    use m_transport_fem,            only: SolveTransport_FEM
+    use m_diffusion_iga,            only: SolveDiffusion
+    use m_diffusion_fem,            only: SolveDiffusion_FEM
+    use m_output_iga,               only: export_transport_vtk_iga, export_diffusion_vtk_iga, &
+                                          export_transport_vtk_patchiga
+    use m_output_fem,               only: export_transport_vtk_fem, export_diffusion_vtk_fem
     use petscsys
     implicit none
 
@@ -206,7 +203,8 @@ program maniac
                                          is_adjoint, is_eigenvalue)
                 call export_transport_vtk_patchiga(trim(run_dir), trim(nametag), &
                                                     mesh_iga, FE_iga, QuadSn, scalar_flux, PD, &
-                                                    mesh_iga%n_groups, vtk_refine)
+                                                    mesh_iga%n_groups, vtk_refine, &
+                                                    ang_flux=ang_flux, ang_out=ang_out)
             else
                 call InitialiseTransport_SpanDG(mesh_iga, FE_iga, QuadSn, QuadVol, QuadFace, &
                                                  mats, PD, sweep_order)

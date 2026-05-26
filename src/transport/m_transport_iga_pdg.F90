@@ -11,10 +11,9 @@
 !   Source_Patch_DGFEM                   -- scatter + fission source
 !   Calculate_Production_Patch_DGFEM    -- fission production for k-eff
 !   Remap_Patch_To_Elem_Flux            -- utility: map patch flux → elem layout
-module m_transport_iga
+module m_transport_iga_pdg
     use m_constants
     use m_types
-    use m_types_iga
     use m_quadrature
     use m_material
     use m_power_iteration, only: PowerIteration
@@ -61,21 +60,26 @@ contains
         integer,               intent(in)    :: sweep_order(:,:), ref_ID(:)
 
         integer  :: mm, ee, pp, g, f, info, k
-        integer  :: j_f, upwind_dof, local_dof, m_ref, n_face
-        real(dp) :: dir(3), w_mm, o_n
+        integer  :: j_f, local_dof, m_ref, n_face
+        real(dp) :: w_mm
         integer  :: idx_start, idx_end, nb
-        logical  :: is_inflow(mesh%n_faces_per_elem)
         real(dp) :: b(PD%n_basis_patch)
-        real(dp) :: face_term(PD%n_basis_patch, PD%n_basis_patch)
+        real(dp) :: upwind_flux(PD%n_face_basis_max)
+        real(dp), allocatable :: ang_flux_snap(:,:,:)
 
         nb = PD%n_basis_patch
         scalar_flux = 0.0_dp
 
+        ! Snapshot ang_flux before the parallel sweep so reflective BCs can
+        ! safely read paired-angle fluxes without racing concurrent writes.
+        ! This is the standard lagged-reflective approach; source iteration
+        ! converges the lag to zero at each outer level.
+        if (size(ref_ID) > 0) allocate(ang_flux_snap, source=ang_flux)
+
         !$OMP PARALLEL DO &
-        !$OMP& PRIVATE(mm, dir, w_mm, ee, pp, idx_start, idx_end, f, o_n, is_inflow, &
-        !$OMP&          g, b, face_term, n_face, j_f, upwind_dof, local_dof, m_ref, info, k)
+        !$OMP& PRIVATE(mm, w_mm, ee, pp, idx_start, idx_end, f, &
+        !$OMP&          g, b, n_face, j_f, local_dof, m_ref, info, k, upwind_flux)
         do mm = 1, sn_quad%n_angles
-            dir  = sn_quad%dirs(mm, :)
             w_mm = sn_quad%weights(mm)
 
             do ee = 1, size(sweep_order, 1)
@@ -83,39 +87,32 @@ contains
                 idx_start = (pp - 1)*nb + 1
                 idx_end   =  pp      *nb
 
-                do f = 1, mesh%n_faces_per_elem
-                    o_n = dot_product(dir, PD%face_normals(:,f,pp))
-                    is_inflow(f) = (o_n < 0.0_dp)
-                end do
-
                 do g = 1, mesh%n_groups
                     b = total_source(idx_start:idx_end, g)
 
                     do f = 1, mesh%n_faces_per_elem
-                        if (.not. is_inflow(f)) cycle
-                        face_term = dir(1)*PD%face_mass_x(:,:,f,pp) + &
-                                    dir(2)*PD%face_mass_y(:,:,f,pp) + &
-                                    dir(3)*PD%face_mass_z(:,:,f,pp)
                         n_face = PD%n_face_basis_f(f)
-
                         if (PD%face_connectivity(1,f,pp) > 0) then
-                            ! Interior face: upwind flux from neighbor patch
+                            ! Interior face: gather upwind flux from neighbor patch
                             do j_f = 1, n_face
-                                upwind_dof = PD%upwind_idx(j_f, f, pp)
-                                b = b - ang_flux(upwind_dof, mm, g) * &
-                                        face_term(:, PD%face_node_map_patch(j_f, f))
+                                upwind_flux(j_f) = ang_flux(PD%upwind_idx(j_f,f,pp), mm, g)
                             end do
                         else if (PD%face_connectivity(4,f,pp) > 0 .and. &
                                  any(PD%face_connectivity(4,f,pp) == ref_ID)) then
-                            ! Reflective BC
+                            ! Reflective BC — read from snapshot to avoid OMP race
                             m_ref = PD%reflect_map(mm, f, pp)
                             do j_f = 1, n_face
                                 local_dof = idx_start - 1 + PD%face_node_map_patch(j_f, f)
-                                b = b - ang_flux(local_dof, m_ref, g) * &
-                                        face_term(:, PD%face_node_map_patch(j_f, f))
+                                upwind_flux(j_f) = ang_flux_snap(local_dof, m_ref, g)
                             end do
+                        else
+                            cycle  ! vacuum: zero upwind flux, no contribution
                         end if
-                        ! Vacuum BC: upwind flux = 0, no contribution.
+                        ! face_mass_in is zero for outflow spans, so this is always safe
+                        do j_f = 1, n_face
+                            b = b - upwind_flux(j_f) * &
+                                    PD%face_mass_in(:, PD%face_node_map_patch(j_f,f), f, pp, mm)
+                        end do
                     end do
 
                     call dgetrs('N', nb, 1, PD%local_lu(:,:,pp,mm,g), nb, &
@@ -135,6 +132,8 @@ contains
             end do
         end do
         !$OMP END PARALLEL DO
+
+        if (allocated(ang_flux_snap)) deallocate(ang_flux_snap)
     end subroutine Transport_Sweep_Patch
 
     ! ------------------------------------------------------------------
@@ -278,7 +277,7 @@ contains
 
         integer :: n_dof, n_patches
 
-        n_patches  = size(mesh%patches)
+        n_patches  = size(sweep_order, 1)   ! correct for both FDG (n_elems) and PDG (n_patches)
         n_dof      = n_patches * PD%n_basis_patch
         s_n_groups = mesh%n_groups
         s_n_patches= n_patches
@@ -329,4 +328,4 @@ contains
                                                s_n_patches, is_adjoint)
     end subroutine patch_production
 
-end module m_transport_iga
+end module m_transport_iga_pdg

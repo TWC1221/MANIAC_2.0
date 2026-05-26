@@ -1,8 +1,9 @@
 ! Shared derived types used across all solvers (diffusion/transport, FEM/IGA).
 !
 ! Mesh hierarchy:    t_mesh  ←  t_mesh_iga  /  t_mesh_fem
-! Transport data:    t_fem_dg  (span-level DG, IGA and FEM)
+! Transport data:    t_fem_dg   (span-level DG, IGA and FEM)
 !                    t_patch_dg (patch-level DG, IGA only)
+! FEM basis:         t_basis_fem (Lagrange basis with precomputed reference arrays)
 module m_types
     use m_constants
     implicit none
@@ -104,6 +105,7 @@ module m_types
         ! Per-element-per-angle LU factors
         real(dp), allocatable :: local_lu(:,:,:,:,:)      ! (n_basis, n_basis, n_elems, n_angles, n_groups)
         integer,  allocatable :: local_pivots(:,:,:,:)    ! (n_basis, n_elems, n_angles, n_groups)
+
     end type t_fem_dg
 
     ! ------------------------------------------------------------------
@@ -132,10 +134,10 @@ module m_types
         real(dp), allocatable :: patch_stiff_z(:,:,:)
         real(dp), allocatable :: basis_integrals_vol(:,:)  ! (n_basis_patch, n_patches)
 
-        ! Patch-boundary face matrices (n_basis_patch, n_basis_patch, n_faces, n_patches)
-        real(dp), allocatable :: face_mass_x(:,:,:,:)
-        real(dp), allocatable :: face_mass_y(:,:,:,:)
-        real(dp), allocatable :: face_mass_z(:,:,:,:)
+        ! Direction-applied face matrices split by inflow/outflow per angle, per span
+        ! (n_basis_patch, n_basis_patch, n_faces, n_patches, n_angles)
+        real(dp), allocatable :: face_mass_out(:,:,:,:,:)  ! Ω·n≥0 spans → LU stiffness
+        real(dp), allocatable :: face_mass_in (:,:,:,:,:)  ! Ω·n<0 spans → sweep RHS
 
         ! Patch-level topology
         integer,  allocatable :: face_connectivity(:,:,:)  ! (4, n_faces, n_patches)
@@ -146,6 +148,97 @@ module m_types
         ! Per-patch-per-angle LU factors
         real(dp), allocatable :: local_lu(:,:,:,:,:)       ! (nb, nb, n_patches, n_angles, n_groups)
         integer,  allocatable :: local_pivots(:,:,:,:)     ! (nb, n_patches, n_angles, n_groups)
+
     end type t_patch_dg
+
+    ! ------------------------------------------------------------------
+    ! FEM mesh: inherits all common fields from t_mesh.
+    ! ------------------------------------------------------------------
+    type, extends(t_mesh) :: t_mesh_fem
+    end type t_mesh_fem
+
+    ! ------------------------------------------------------------------
+    ! Lagrange basis descriptor.
+    ! Basis functions are uniform across all elements and are precomputed
+    ! once on the reference element [-1,1]^d.
+    ! ------------------------------------------------------------------
+    type t_basis_fem
+        integer :: dim
+        integer :: order
+        integer :: p_order, q_order, r_order   ! per-direction (all equal for FEM)
+        integer :: n_basis                      ! (p+1)^dim
+        integer :: n_nodes_per_face             ! (p+1)^(dim-1)
+
+        real(dp), allocatable :: node_roots(:)       ! equispaced Lagrange nodes in [-1,1]
+        integer,  allocatable :: face_node_map(:,:)  ! (n_nodes_per_face, n_faces_per_elem)
+
+        ! Precomputed at volume quadrature points — (n_quad_vol, n_basis)
+        real(dp), allocatable :: basis_at_quad(:,:)
+        real(dp), allocatable :: dbasis_dxi(:,:)
+        real(dp), allocatable :: dbasis_deta(:,:)
+        real(dp), allocatable :: dbasis_dzeta(:,:)  ! 3D only
+
+        ! Precomputed at face quadrature points — (n_quad_face, n_nodes_per_face)
+        real(dp), allocatable :: basis_at_face_quad(:,:)
+        real(dp), allocatable :: dbasis_face_dxi(:,:)
+        real(dp), allocatable :: dbasis_face_deta(:,:)  ! 3D only
+    end type t_basis_fem
+
+    ! ------------------------------------------------------------------
+    ! NURBS volume patch.  knots_zeta allocated only for 3D meshes.
+    ! ------------------------------------------------------------------
+    type t_patch_iga
+        integer,  allocatable :: cp_ids(:)
+        integer               :: material_id = -1
+        real(dp), allocatable :: knots_xi(:)
+        real(dp), allocatable :: knots_eta(:)
+        real(dp), allocatable :: knots_zeta(:)
+        integer               :: face_to_surface(6) = 0
+    end type t_patch_iga
+
+    ! ------------------------------------------------------------------
+    ! NURBS boundary entity (3D: 2D face patch; 2D: 1D edge patch).
+    ! ------------------------------------------------------------------
+    type t_surface_iga
+        integer,  allocatable :: cp_ids(:)
+        integer               :: bc_id = -1
+        real(dp), allocatable :: knots_xi(:)
+        real(dp), allocatable :: knots_eta(:)
+        integer               :: n_elements = 0
+        integer,  allocatable :: elem_span_indices(:,:)  ! (2, n_elements)
+        integer,  allocatable :: elems(:,:)              ! (n_elements, n_basis)
+    end type t_surface_iga
+
+    ! ------------------------------------------------------------------
+    ! IGA mesh, extending t_mesh with NURBS-specific fields.
+    ! ------------------------------------------------------------------
+    type, extends(t_mesh) :: t_mesh_iga
+        real(dp), allocatable :: weights(:)              ! (n_nodes) NURBS weights
+
+        type(t_patch_iga),   allocatable :: patches(:)
+        type(t_surface_iga), allocatable :: iga_surfaces(:)
+
+        integer, allocatable :: elem_patch_id(:)
+        integer, allocatable :: elem_span_indices(:,:)   ! (dim, n_elems)
+
+        integer, allocatable :: elem_map_2d(:,:,:)       ! (n_patches, max_k, max_k)
+        integer, allocatable :: elem_map_3d(:,:,:,:)     ! (n_patches, max_k, max_k, max_k)
+
+        real(dp), allocatable :: elem_u_min(:), elem_u_max(:)
+        real(dp), allocatable :: elem_v_min(:), elem_v_max(:)
+        real(dp), allocatable :: elem_w_min(:), elem_w_max(:)
+    end type t_mesh_iga
+
+    ! ------------------------------------------------------------------
+    ! NURBS/B-spline basis descriptor (evaluated on-the-fly per element).
+    ! ------------------------------------------------------------------
+    type t_basis_iga
+        integer :: dim
+        integer :: order
+        integer :: p_order, q_order, r_order
+        integer :: n_basis
+        integer :: n_nodes_per_face
+        integer, allocatable :: face_node_map(:,:)       ! (n_nodes_per_face, n_faces_per_elem)
+    end type t_basis_iga
 
 end module m_types

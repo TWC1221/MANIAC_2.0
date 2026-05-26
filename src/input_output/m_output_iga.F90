@@ -7,7 +7,6 @@
 module m_output_iga
     use m_constants
     use m_types
-    use m_types_iga
     use m_utilities
     use m_basis_iga, only: EvalNURBS2D, EvalNURBS3D
     use m_quadrature
@@ -162,8 +161,8 @@ contains
         real(dp), optional,           intent(in)           :: ang_flux(:,:,:)
         logical,  optional,           intent(in)           :: ang_out
 
-        real(dp), allocatable :: flux_elem(:,:)
-        integer :: ee, pp, a, pdof, nb, g
+        real(dp), allocatable :: flux_elem(:,:), ang_flux_elem(:,:,:)
+        integer :: ee, pp, a, pdof, nb, g, mm, n_angles
 
         nb = PD%n_basis_patch
         allocate(flux_elem(mesh%n_elems * FE%n_basis, n_groups))
@@ -178,8 +177,34 @@ contains
             end do
         end do
 
-        call export_transport_vtk_iga(outdir, tag, mesh, FE, QuadSn, flux_elem, &
-                                       n_groups, refine_level, label="iga_pdg")
+        if (present(ang_flux) .and. present(ang_out)) then
+            if (ang_out) then
+                n_angles = size(ang_flux, 2)
+                allocate(ang_flux_elem(mesh%n_elems * FE%n_basis, n_angles, n_groups))
+                do ee = 1, mesh%n_elems
+                    pp = mesh%elem_patch_id(ee)
+                    do a = 1, FE%n_basis
+                        pdof = PD%elem_to_patch_dof(a, ee)
+                        do mm = 1, n_angles
+                            do g = 1, n_groups
+                                ang_flux_elem((ee-1)*FE%n_basis + a, mm, g) = &
+                                    ang_flux((pp-1)*nb + pdof, mm, g)
+                            end do
+                        end do
+                    end do
+                end do
+                call export_transport_vtk_iga(outdir, tag, mesh, FE, QuadSn, flux_elem, &
+                                               n_groups, refine_level, label="iga_pdg", &
+                                               ang_flux=ang_flux_elem, ang_out=.true.)
+                deallocate(ang_flux_elem)
+            else
+                call export_transport_vtk_iga(outdir, tag, mesh, FE, QuadSn, flux_elem, &
+                                               n_groups, refine_level, label="iga_pdg")
+            end if
+        else
+            call export_transport_vtk_iga(outdir, tag, mesh, FE, QuadSn, flux_elem, &
+                                           n_groups, refine_level, label="iga_pdg")
+        end if
 
         deallocate(flux_elem)
     end subroutine export_transport_vtk_patchiga

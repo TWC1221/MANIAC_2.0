@@ -10,19 +10,21 @@
 !
 ! Public:
 !   InitialiseBasisFEM   -- set up t_basis_fem and precompute all arrays
-!   GetMapping2D_FEM     -- Lagrange Jacobian + physical gradients (2D element)
-!   GetMapping3D_FEM     -- Lagrange Jacobian + physical gradients (3D element)
-!   EvalLagrange1D       -- evaluate 1D basis at arbitrary xi (2D boundary edge)
-!   EvalLagrange2D       -- evaluate 2D basis at arbitrary (xi,eta) (postprocessing / 3D face)
-!   EvalLagrange3D       -- evaluate 3D basis at arbitrary (xi,eta,zeta) (postprocessing)
+!   GetMapping2D_FEM     -- Lagrange Jacobian + physical gradients at precomputed quad point
+!   GetMapping3D_FEM     -- same for 3D
+!   EvalAtFace2D_FEM     -- Jacobian at arbitrary face (xi,eta) coords — face normals/centroids
+!   EvalAtFace3D_FEM     -- same for 3D
+!   EvalLagrange1D       -- evaluate 1D basis at arbitrary xi
+!   EvalLagrange2D       -- evaluate 2D basis at arbitrary (xi,eta)
+!   EvalLagrange3D       -- evaluate 3D basis at arbitrary (xi,eta,zeta)
 module m_basis_fem
     use m_constants
     use m_types
-    use m_types_fem
     implicit none
     private
     public :: InitialiseLagrangeBasis
     public :: GetMapping2D_FEM, GetMapping3D_FEM
+    public :: EvalAtFace2D_FEM, EvalAtFace3D_FEM
     public :: EvalLagrange1D, EvalLagrange2D, EvalLagrange3D
 
 contains
@@ -392,5 +394,47 @@ contains
         end do
         dLagrange1D = sum_val
     end function dLagrange1D
+
+    ! ------------------------------------------------------------------
+    ! Evaluate basis + 2D Jacobian at an arbitrary face (xi,eta) point.
+    ! Used for face normals and centroids in connectivity_and_normals_fem.
+    ! ------------------------------------------------------------------
+    subroutine EvalAtFace2D_FEM(FE, xi, eta, coords2d, N, J)
+        type(t_basis_fem), intent(in)  :: FE
+        real(dp),          intent(in)  :: xi, eta, coords2d(:,:)
+        real(dp),          intent(out) :: N(:), J(2,2)
+        real(dp) :: dN_dxi(FE%n_basis), dN_deta(FE%n_basis)
+        call EvalLagrange2D(FE, xi, eta, N, dN_dxi, dN_deta)
+        J(1,:) = matmul(dN_dxi,  coords2d)
+        J(2,:) = matmul(dN_deta, coords2d)
+    end subroutine EvalAtFace2D_FEM
+
+    ! ------------------------------------------------------------------
+    ! Evaluate basis + 3D Jacobian + physical gradients at an arbitrary
+    ! face (xi,eta,zeta) point.
+    ! ------------------------------------------------------------------
+    subroutine EvalAtFace3D_FEM(FE, xi, eta, zeta, coords3d, N, dN_dx, dN_dy, dN_dz, J)
+        type(t_basis_fem), intent(in)  :: FE
+        real(dp),          intent(in)  :: xi, eta, zeta, coords3d(:,:)
+        real(dp),          intent(out) :: N(:), dN_dx(:), dN_dy(:), dN_dz(:), J(3,3)
+        real(dp) :: dN_dxi(FE%n_basis), dN_deta(FE%n_basis), dN_dzeta(FE%n_basis)
+        real(dp) :: invJ(3,3), detJ
+        call EvalLagrange3D(FE, xi, eta, zeta, N, dN_dxi, dN_deta, dN_dzeta)
+        J(1,:) = matmul(dN_dxi,   coords3d)
+        J(2,:) = matmul(dN_deta,  coords3d)
+        J(3,:) = matmul(dN_dzeta, coords3d)
+        detJ = J(1,1)*(J(2,2)*J(3,3)-J(2,3)*J(3,2)) &
+             - J(1,2)*(J(2,1)*J(3,3)-J(2,3)*J(3,1)) &
+             + J(1,3)*(J(2,1)*J(3,2)-J(2,2)*J(3,1))
+        if (abs(detJ) < dp_EPSILON) detJ = sign(dp_EPSILON, detJ)
+        invJ(1,1)=(J(2,2)*J(3,3)-J(2,3)*J(3,2))/detJ; invJ(1,2)=(J(1,3)*J(3,2)-J(1,2)*J(3,3))/detJ
+        invJ(1,3)=(J(1,2)*J(2,3)-J(1,3)*J(2,2))/detJ; invJ(2,1)=(J(2,3)*J(3,1)-J(2,1)*J(3,3))/detJ
+        invJ(2,2)=(J(1,1)*J(3,3)-J(1,3)*J(3,1))/detJ; invJ(2,3)=(J(1,3)*J(2,1)-J(1,1)*J(2,3))/detJ
+        invJ(3,1)=(J(2,1)*J(3,2)-J(2,2)*J(3,1))/detJ; invJ(3,2)=(J(1,2)*J(3,1)-J(1,1)*J(3,2))/detJ
+        invJ(3,3)=(J(1,1)*J(2,2)-J(1,2)*J(2,1))/detJ
+        dN_dx = invJ(1,1)*dN_dxi + invJ(1,2)*dN_deta + invJ(1,3)*dN_dzeta
+        dN_dy = invJ(2,1)*dN_dxi + invJ(2,2)*dN_deta + invJ(2,3)*dN_dzeta
+        dN_dz = invJ(3,1)*dN_dxi + invJ(3,2)*dN_deta + invJ(3,3)*dN_dzeta
+    end subroutine EvalAtFace3D_FEM
 
 end module m_basis_fem

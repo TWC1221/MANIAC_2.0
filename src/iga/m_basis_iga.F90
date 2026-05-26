@@ -15,7 +15,6 @@
 module m_basis_iga
     use m_constants
     use m_types
-    use m_types_iga
     implicit none
     private
     public :: InitialiseNurbsBasis

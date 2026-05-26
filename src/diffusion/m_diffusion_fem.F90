@@ -13,7 +13,6 @@
 module m_diffusion_fem
     use m_constants
     use m_types
-    use m_types_fem
     use m_material
     use m_quadrature
     use m_basis_fem,       only: GetMapping2D_FEM, GetMapping3D_FEM

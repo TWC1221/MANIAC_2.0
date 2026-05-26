@@ -14,9 +14,9 @@
 module m_transport_precompute_fem
     use m_constants
     use m_types
-    use m_types_fem
     use m_quadrature
-    use m_basis_fem,   only: GetMapping2D_FEM, GetMapping3D_FEM, EvalLagrange2D, EvalLagrange3D
+    use m_basis_fem,   only: GetMapping2D_FEM, GetMapping3D_FEM, &
+                             EvalAtFace2D_FEM, EvalAtFace3D_FEM
     use m_material
     use m_sweep_order, only: generate_sweep_order, precompute_reflective_map, &
                              precompute_upwind_indices, all_nodes_in_list
@@ -135,7 +135,7 @@ contains
                             case(5); xi_f=-1.0_dp;        eta_f=QuadFace%xi(q);  zeta_f=QuadFace%eta(q)
                             case(6); xi_f= 1.0_dp;        eta_f=QuadFace%xi(q);  zeta_f=QuadFace%eta(q)
                         end select
-                        call eval_fem_3d_at(FE, xi_f, eta_f, zeta_f, nodes, N, dN_dx, dN_dy, dN_dz, J)
+                        call EvalAtFace3D_FEM(FE, xi_f, eta_f, zeta_f, nodes, N, dN_dx, dN_dy, dN_dz, J)
                         centroids(:,f,ee) = centroids(:,f,ee) + &
                             matmul(transpose(nodes), N) / real(n_pts, dp)
                         ! Area element from surface tangent cross product
@@ -168,7 +168,7 @@ contains
                             case(3); xi_f=QuadFace%xi(q); eta_f= 1.0_dp
                             case(4); xi_f=-1.0_dp;        eta_f=QuadFace%xi(q)
                         end select
-                        call eval_fem_2d_at(FE, xi_f, eta_f, nodes(:,1:2), N, J2)
+                        call EvalAtFace2D_FEM(FE, xi_f, eta_f, nodes(:,1:2), N, J2)
                         centroids(1,f,ee) = centroids(1,f,ee) + dot_product(N, nodes(:,1)) / real(n_pts,dp)
                         centroids(2,f,ee) = centroids(2,f,ee) + dot_product(N, nodes(:,2)) / real(n_pts,dp)
                         select case (f)
@@ -314,7 +314,7 @@ contains
                             case(5); xi_f=-1.0_dp;        eta_f=QuadFace%xi(q);  zeta_f=QuadFace%eta(q)
                             case(6); xi_f= 1.0_dp;        eta_f=QuadFace%xi(q);  zeta_f=QuadFace%eta(q)
                         end select
-                        call eval_fem_3d_at(FE, xi_f, eta_f, zeta_f, nodes, N, dN_dx, dN_dy, dN_dz, J)
+                        call EvalAtFace3D_FEM(FE, xi_f, eta_f, zeta_f, nodes, N, dN_dx, dN_dy, dN_dz, J)
                         select case (f)
                             case(1,2)
                                 dA(1)=(J(1,2)*J(2,3)-J(1,3)*J(2,2))
@@ -339,7 +339,7 @@ contains
                             case(3); xi_f=QuadFace%xi(q); eta_f= 1.0_dp
                             case(4); xi_f=-1.0_dp;        eta_f=QuadFace%xi(q)
                         end select
-                        call eval_fem_2d_at(FE, xi_f, eta_f, nodes(:,1:2), N, J2)
+                        call EvalAtFace2D_FEM(FE, xi_f, eta_f, nodes(:,1:2), N, J2)
                         dA(3) = 0.0_dp
                         select case (f)
                             case(1,3)
@@ -423,44 +423,6 @@ contains
     end subroutine precompute_lu_fem
 
     ! ------------------------------------------------------------------
-    ! Evaluate Lagrange basis + Jacobian at an arbitrary reference point.
-    ! Used for face normal and face integral computations.
-    ! ------------------------------------------------------------------
-    subroutine eval_fem_2d_at(FE, xi, eta, coords2d, N, J)
-        type(t_basis_fem), intent(in)  :: FE
-        real(dp),           intent(in)  :: xi, eta, coords2d(:,:)
-        real(dp),           intent(out) :: N(:), J(2,2)
-        real(dp) :: dN_dxi(FE%n_basis), dN_deta(FE%n_basis)
-        call EvalLagrange2D(FE, xi, eta, N, dN_dxi, dN_deta)
-        J(1,:) = matmul(dN_dxi,  coords2d)
-        J(2,:) = matmul(dN_deta, coords2d)
-    end subroutine eval_fem_2d_at
-
-    subroutine eval_fem_3d_at(FE, xi, eta, zeta, coords3d, N, dN_dx, dN_dy, dN_dz, J)
-        type(t_basis_fem), intent(in)  :: FE
-        real(dp),           intent(in)  :: xi, eta, zeta, coords3d(:,:)
-        real(dp),           intent(out) :: N(:), dN_dx(:), dN_dy(:), dN_dz(:), J(3,3)
-        real(dp) :: dN_dxi(FE%n_basis), dN_deta(FE%n_basis), dN_dzeta(FE%n_basis)
-        real(dp) :: invJ(3,3), detJ
-        call EvalLagrange3D(FE, xi, eta, zeta, N, dN_dxi, dN_deta, dN_dzeta)
-        J(1,:) = matmul(dN_dxi,   coords3d)
-        J(2,:) = matmul(dN_deta,  coords3d)
-        J(3,:) = matmul(dN_dzeta, coords3d)
-        detJ = J(1,1)*(J(2,2)*J(3,3)-J(2,3)*J(3,2)) &
-             - J(1,2)*(J(2,1)*J(3,3)-J(2,3)*J(3,1)) &
-             + J(1,3)*(J(2,1)*J(3,2)-J(2,2)*J(3,1))
-        if (abs(detJ) < dp_EPSILON) detJ = sign(dp_EPSILON, detJ)
-        invJ(1,1)=(J(2,2)*J(3,3)-J(2,3)*J(3,2))/detJ; invJ(1,2)=(J(1,3)*J(3,2)-J(1,2)*J(3,3))/detJ
-        invJ(1,3)=(J(1,2)*J(2,3)-J(1,3)*J(2,2))/detJ; invJ(2,1)=(J(2,3)*J(3,1)-J(2,1)*J(3,3))/detJ
-        invJ(2,2)=(J(1,1)*J(3,3)-J(1,3)*J(3,1))/detJ; invJ(2,3)=(J(1,3)*J(2,1)-J(1,1)*J(2,3))/detJ
-        invJ(3,1)=(J(2,1)*J(3,2)-J(2,2)*J(3,1))/detJ; invJ(3,2)=(J(1,2)*J(3,1)-J(1,1)*J(3,2))/detJ
-        invJ(3,3)=(J(1,1)*J(2,2)-J(1,2)*J(2,1))/detJ
-        dN_dx = invJ(1,1)*dN_dxi + invJ(1,2)*dN_deta + invJ(1,3)*dN_dzeta
-        dN_dy = invJ(2,1)*dN_dxi + invJ(2,2)*dN_deta + invJ(2,3)*dN_dzeta
-        dN_dz = invJ(3,1)*dN_dxi + invJ(3,2)*dN_deta + invJ(3,3)*dN_dzeta
-    end subroutine eval_fem_3d_at
-
-    ! ------------------------------------------------------------------
     ! Face orientation: 1 if shared face nodes start with the same node,
     ! -1 otherwise (reversed). Used for upwind DOF alignment.
     ! ------------------------------------------------------------------
@@ -472,14 +434,5 @@ contains
         first_node_e1 = mesh%elems(e1, FE%face_node_map(1, f1))
         orient = merge(1, -1, mesh%elems(e2, FE%face_node_map(1, f2)) == first_node_e1)
     end function face_orient_fem
-
-    subroutine print_matrix(M, n)
-        real(dp), intent(in) :: M(:,:)
-        integer,  intent(in) :: n
-        integer :: i
-        do i = 1, n
-            write(*,'(*(F10.5,1X))') M(i, 1:n)
-        end do
-    end subroutine print_matrix
 
 end module m_transport_precompute_fem

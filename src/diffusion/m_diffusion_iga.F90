@@ -12,7 +12,6 @@
 module m_diffusion_iga
     use m_constants
     use m_types
-    use m_types_iga
     use m_material
     use m_quadrature
     use m_basis_iga

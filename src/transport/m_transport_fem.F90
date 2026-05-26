@@ -10,7 +10,6 @@
 module m_transport_fem
     use m_constants
     use m_types
-    use m_types_fem
     use m_quadrature
     use m_material
     use m_power_iteration, only: PowerIteration

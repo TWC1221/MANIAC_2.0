@@ -5,10 +5,9 @@
 ! export_diffusion_vtk_fem  -- CG nodal flux on a FEM mesh
 module m_output_fem
     use m_constants
-    use m_types_fem
+    use m_types
     use m_utilities
     use m_basis_fem, only: EvalLagrange2D, EvalLagrange3D
-    use m_types,      only: t_sn_quadrature
     implicit none
     private
     public :: export_transport_vtk_fem

@@ -10,7 +10,6 @@
 module m_sweep_order
     use m_constants
     use m_types
-    use m_types_iga
     use m_quadrature
     use m_basis_iga, only: GetMapping2D, GetMapping3D
     implicit none

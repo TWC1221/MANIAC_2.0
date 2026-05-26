@@ -73,21 +73,29 @@ contains
         procedure(production_fn)     :: compute_prod
 
         real(dp), allocatable :: src(:,:), flux_old(:,:)
-        real(dp) :: prod_new, prod_old, k_eff_old, err_phi, err_k, norm_phi
+        real(dp) :: prod_new, prod_old, k_eff_old, err_phi, err_k, norm_phi, norm_old
         integer  :: outer
+        integer, parameter :: PRINT_STRIDE_EIG = 10, PRINT_STRIDE_FS = 5
 
         allocate(src    (size(flux,1), size(flux,2)), source=0.0_dp)
         allocate(flux_old(size(flux,1), size(flux,2)))
 
-        k_eff = 1.0_dp
+        k_eff    = 1.0_dp
+        norm_old = 0.0_dp
         call compute_prod(prod_old, flux, is_adjoint)
         prod_old = max(prod_old, 1.0e-20_dp)
 
         write(*,*)
         write(*,'(A)') " |=======================================================================|"
-        write(*,'(A)') " |                            POWER ITERATION                            |"
-        write(*,'(A)') " |=======================================================================|"
-        write(*,'(A, A5, A11, A16, T74, A)') " |  ", "Iter", "k_eff", "dk_eff (pcm)", "|"
+        if (is_eigenvalue) then
+            write(*,'(A)') " |                            POWER ITERATION                            |"
+            write(*,'(A)') " |=======================================================================|"
+            write(*,'(A)') " |   Iter        k_eff       dk_eff (pcm)                               |"
+        else
+            write(*,'(A)') " |                       FIXED-SOURCE ITERATION                          |"
+            write(*,'(A)') " |=======================================================================|"
+            write(*,'(A)') " |   Iter    Flux residual    Flux norm                                  |"
+        end if
         write(*,'(A)') " |-----------------------------------------------------------------------|"
 
         do outer = 1, max_outer
@@ -107,12 +115,33 @@ contains
             err_phi  = merge(maxval(abs(flux - flux_old)) / norm_phi, 0.0_dp, norm_phi > 0.0_dp)
             err_k    = abs(k_eff - k_eff_old)
 
-            if (mod(outer, 10) == 0 .or. outer == 1) &
-                write(*,'(A, I5, F15.8, F12.2, T74, A)') " |  ", outer, k_eff, err_k * 1.0e5_dp, "|"
+            if (is_eigenvalue) then
+                if (mod(outer, PRINT_STRIDE_EIG) == 0 .or. outer == 1) &
+                    write(*,'(A, I5, F15.8, F12.2, T74, A)') " |  ", outer, k_eff, err_k * 1.0e5_dp, "|"
+            else
+                if (mod(outer, PRINT_STRIDE_FS) == 0 .or. outer == 1) &
+                    write(*,'(A, I5, 2X, ES15.6, 2X, ES15.6, T74, A)') " |  ", outer, err_phi, norm_phi, "|"
+                ! Divergence guard: warn if flux has doubled since last print stride
+                if (norm_old > 0.0_dp .and. norm_phi > 10.0_dp * norm_old) then
+                    write(*,'(A)') " |-----------------------------------------------------------------------|"
+                    write(*,'(A)') " |  WARNING: Flux is growing - problem may be super-critical.            |"
+                    write(*,'(A)') " |  Check scatter ratio c = sum(SigmaS)/SigmaT and boundary conditions.  |"
+                    write(*,'(A)') " |  For vacuum-only BC use n_ref_ids = 0 in config.nml.                  |"
+                    write(*,'(A)') " |=======================================================================|"
+                    write(*,*)
+                    return
+                end if
+                if (mod(outer, PRINT_STRIDE_FS) == 0) norm_old = norm_phi
+            end if
 
             if (err_phi < tol .and. (err_k < tol .or. .not. is_eigenvalue)) then
                 write(*,'(A)') " |-----------------------------------------------------------------------|"
-                write(*,'(A, I5, A, F12.8, T74, A)') " |  Converged in", outer, " iterations.  k_eff = ", k_eff, "|"
+                if (is_eigenvalue) then
+                    write(*,'(A, I5, A, F12.8, T74, A)') " |  Converged in", outer, " iterations.  k_eff = ", k_eff, "|"
+                else
+                    write(*,'(A, I5, A, ES11.4, T74, A)') " |  Converged in", outer, &
+                        " iterations.  flux residual = ", err_phi, "|"
+                end if
                 write(*,'(A)') " |=======================================================================|"
                 write(*,*)
                 exit

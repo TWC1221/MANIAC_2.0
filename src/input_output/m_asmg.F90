@@ -18,7 +18,6 @@
 module m_asmg
     use m_constants
     use m_types
-    use m_types_iga
     implicit none
     private
     public :: read_asmg_mesh, write_mesh_to_files, detect_mesh_type
