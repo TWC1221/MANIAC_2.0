@@ -16,7 +16,8 @@ module m_transport_iga_pdg
     use m_types
     use m_quadrature
     use m_material
-    use m_power_iteration, only: PowerIteration
+    use m_power_iteration,  only: PowerIteration
+    use m_output_iga,       only: export_transport_vtk_iga, export_transport_vtk_patchiga
     implicit none
     public :: SolveTransport_IGA
     public :: Transport_Sweep_Patch, Source_Patch_DGFEM
@@ -25,13 +26,21 @@ module m_transport_iga_pdg
     ! Module-level context set by SolveTransport_IGA, read by callbacks.
     type(t_mesh_iga),      pointer, save :: s_mesh    => null()
     type(t_sn_quadrature), pointer, save :: s_sn_quad => null()
-    type(t_patch_dg), pointer, save :: s_PD   => null()
+    type(t_patch_dg),      pointer, save :: s_PD      => null()
     type(t_material),      pointer, save :: s_mats(:) => null()
     real(dp), allocatable, save          :: s_ang_flux(:,:,:)
     integer,  allocatable, save          :: s_sweep_order(:,:)
     integer,  allocatable, save          :: s_ref_ids(:)
-    integer,  save                       :: s_n_groups = 0
+    integer,  save                       :: s_n_groups  = 0
     integer,  save                       :: s_n_patches = 0
+
+    ! Snapshot state (populated only when snap_dir is provided to SolveTransport_IGA)
+    type(t_basis_iga),  save            :: s_FE_iga
+    logical,            save            :: s_have_snap  = .false.
+    character(len=256), save            :: s_snap_dir   = ""
+    character(len=256), save            :: s_snap_tag   = ""
+    integer,            save            :: s_vtk_refine = 4
+    integer,            save            :: s_snap_count = 0
 
     interface
         subroutine dgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info)
@@ -261,11 +270,12 @@ contains
     subroutine SolveTransport_IGA(mesh, materials, sn_quad, PD, &
                                         scalar_flux, ang_flux_out, k_eff, &
                                         sweep_order, ref_ids, max_outer, tol, &
-                                        is_adjoint, is_eigenvalue)
+                                        is_adjoint, is_eigenvalue, &
+                                        FE, snap_dir, snap_tag, vtk_ref)
         type(t_mesh_iga),      intent(in),    target :: mesh
         type(t_material),      intent(in),    target :: materials(:)
         type(t_sn_quadrature), intent(in),    target :: sn_quad
-        type(t_patch_dg), intent(in), target :: PD
+        type(t_patch_dg),      intent(in),    target :: PD
         real(dp), allocatable, intent(out)           :: scalar_flux(:,:)
         real(dp), allocatable, intent(out)           :: ang_flux_out(:,:,:)
         real(dp),              intent(out)           :: k_eff
@@ -274,6 +284,9 @@ contains
         integer,               intent(in)            :: max_outer
         real(dp),              intent(in)            :: tol
         logical,               intent(in)            :: is_adjoint, is_eigenvalue
+        type(t_basis_iga), optional, intent(in)      :: FE
+        character(len=*),  optional, intent(in)      :: snap_dir, snap_tag
+        integer,           optional, intent(in)      :: vtk_ref
 
         integer :: n_dof, n_patches
 
@@ -287,6 +300,15 @@ contains
         s_PD      => PD
         s_mats    => materials
 
+        s_have_snap = present(FE) .and. present(snap_dir) .and. present(snap_tag)
+        if (s_have_snap) then
+            s_FE_iga     = FE
+            s_snap_dir   = trim(snap_dir)
+            s_snap_tag   = trim(snap_tag)
+            s_vtk_refine = merge(vtk_ref, 4, present(vtk_ref))
+            s_snap_count = 0
+        end if
+
         if (allocated(s_ang_flux))    deallocate(s_ang_flux)
         if (allocated(s_sweep_order)) deallocate(s_sweep_order)
         if (allocated(s_ref_ids))     deallocate(s_ref_ids)
@@ -296,9 +318,16 @@ contains
         allocate(s_ref_ids,     source=ref_ids)
         allocate(scalar_flux(n_dof, s_n_groups), source=1.0_dp)
 
-        call PowerIteration(scalar_flux, k_eff, max_outer, tol, &
-                             is_eigenvalue, is_adjoint, &
-                             patch_source, patch_solve, patch_production)
+        if (s_have_snap) then
+            call PowerIteration(scalar_flux, k_eff, max_outer, tol, &
+                                 is_eigenvalue, is_adjoint, &
+                                 patch_source, patch_solve, patch_production, &
+                                 snapshot_export=iga_snapshot)
+        else
+            call PowerIteration(scalar_flux, k_eff, max_outer, tol, &
+                                 is_eigenvalue, is_adjoint, &
+                                 patch_source, patch_solve, patch_production)
+        end if
 
         call move_alloc(s_ang_flux, ang_flux_out)
     end subroutine SolveTransport_IGA
@@ -327,5 +356,23 @@ contains
         call Calculate_Production_Patch_DGFEM(prod, flux, s_mats, s_mesh, s_PD, &
                                                s_n_patches, is_adjoint)
     end subroutine patch_production
+
+    subroutine iga_snapshot(flux, k_eff, iter)
+        real(dp), intent(in) :: flux(:,:)
+        real(dp), intent(in) :: k_eff
+        integer,  intent(in) :: iter
+        character(len=32) :: lbl
+        s_snap_count = s_snap_count + 1
+        write(lbl,'(A,I4.4)') "snap", s_snap_count
+        if (.not. s_mesh%DG) then
+            call export_transport_vtk_patchiga(trim(s_snap_dir), trim(s_snap_tag), &
+                s_mesh, s_FE_iga, s_sn_quad, flux, s_PD, s_n_groups, s_vtk_refine, &
+                label=trim(lbl))
+        else
+            call export_transport_vtk_iga(trim(s_snap_dir), trim(s_snap_tag), &
+                s_mesh, s_FE_iga, s_sn_quad, flux, s_n_groups, s_vtk_refine, &
+                label=trim(lbl))
+        end if
+    end subroutine iga_snapshot
 
 end module m_transport_iga_pdg

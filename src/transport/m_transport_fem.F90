@@ -13,6 +13,7 @@ module m_transport_fem
     use m_quadrature
     use m_material
     use m_power_iteration, only: PowerIteration
+    use m_output_fem,      only: export_transport_vtk_fem
     implicit none
     public :: SolveTransport_FEM
     public :: Transport_Sweep_FEM, Source_DGFEM_FEM, Calculate_Total_Production_DGFEM_FEM
@@ -29,7 +30,14 @@ module m_transport_fem
     real(dp), allocatable, save          :: s_ang_flux(:,:,:)
     integer,  allocatable, save          :: s_sweep_order(:,:)
     integer,  allocatable, save          :: s_ref_ids(:)
-    integer,  save                       :: s_n_groups = 0
+    integer,  save                       :: s_n_groups   = 0
+
+    ! Snapshot state
+    logical,            save             :: s_have_snap  = .false.
+    character(len=256), save             :: s_snap_dir   = ""
+    character(len=256), save             :: s_snap_tag   = ""
+    integer,            save             :: s_vtk_refine = 4
+    integer,            save             :: s_snap_count = 0
 
     interface
         subroutine dgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info)
@@ -217,12 +225,13 @@ contains
     subroutine SolveTransport_FEM(mesh, materials, FE, sn_quad, TD, &
                                    scalar_flux, ang_flux_out, k_eff, &
                                    sweep_order, ref_ids, max_outer, tol, &
-                                   is_adjoint, is_eigenvalue)
+                                   is_adjoint, is_eigenvalue, &
+                                   snap_dir, snap_tag, vtk_ref)
         type(t_mesh_fem),      intent(in),    target :: mesh
         type(t_material),      intent(in),    target :: materials(:)
         type(t_basis_fem),    intent(in),    target :: FE
         type(t_sn_quadrature), intent(in),    target :: sn_quad
-        type(t_fem_dg), intent(in),    target :: TD
+        type(t_fem_dg),        intent(in),    target :: TD
         real(dp), allocatable, intent(out)           :: scalar_flux(:,:)
         real(dp), allocatable, intent(out)           :: ang_flux_out(:,:,:)
         real(dp),              intent(out)           :: k_eff
@@ -231,6 +240,8 @@ contains
         integer,               intent(in)            :: max_outer
         real(dp),              intent(in)            :: tol
         logical,               intent(in)            :: is_adjoint, is_eigenvalue
+        character(len=*), optional, intent(in)       :: snap_dir, snap_tag
+        integer,          optional, intent(in)       :: vtk_ref
 
         integer :: n_dof
 
@@ -243,6 +254,14 @@ contains
         s_TD      => TD
         s_mats    => materials
 
+        s_have_snap = present(snap_dir) .and. present(snap_tag)
+        if (s_have_snap) then
+            s_snap_dir   = trim(snap_dir)
+            s_snap_tag   = trim(snap_tag)
+            s_vtk_refine = merge(vtk_ref, 4, present(vtk_ref))
+            s_snap_count = 0
+        end if
+
         if (allocated(s_ang_flux))    deallocate(s_ang_flux)
         if (allocated(s_sweep_order)) deallocate(s_sweep_order)
         if (allocated(s_ref_ids))     deallocate(s_ref_ids)
@@ -252,9 +271,16 @@ contains
         allocate(s_ref_ids,     source=ref_ids)
         allocate(scalar_flux(n_dof, s_n_groups), source=1.0_dp)
 
-        call PowerIteration(scalar_flux, k_eff, max_outer, tol, &
-                             is_eigenvalue, is_adjoint,           &
-                             transport_source_fem, transport_solve_fem, transport_production_fem)
+        if (s_have_snap) then
+            call PowerIteration(scalar_flux, k_eff, max_outer, tol, &
+                                 is_eigenvalue, is_adjoint, &
+                                 transport_source_fem, transport_solve_fem, transport_production_fem, &
+                                 snapshot_export=fem_snapshot)
+        else
+            call PowerIteration(scalar_flux, k_eff, max_outer, tol, &
+                                 is_eigenvalue, is_adjoint, &
+                                 transport_source_fem, transport_solve_fem, transport_production_fem)
+        end if
 
         call move_alloc(s_ang_flux, ang_flux_out)
     end subroutine SolveTransport_FEM
@@ -281,5 +307,18 @@ contains
         logical,  intent(in)  :: is_adjoint
         call Calculate_Total_Production_DGFEM_FEM(prod, flux, s_mats, s_mesh, s_FE, s_TD, is_adjoint)
     end subroutine transport_production_fem
+
+    subroutine fem_snapshot(flux, k_eff, iter)
+        real(dp), intent(in) :: flux(:,:)
+        real(dp), intent(in) :: k_eff
+        integer,  intent(in) :: iter
+        character(len=32)  :: lbl
+        character(len=512) :: stag
+        s_snap_count = s_snap_count + 1
+        write(lbl,'(A,I4.4)') "snap", s_snap_count
+        stag = trim(s_snap_tag) // "_" // trim(lbl)
+        call export_transport_vtk_fem(trim(s_snap_dir), trim(stag), &
+            s_mesh, s_FE, s_sn_quad, flux, s_n_groups, s_vtk_refine)
+    end subroutine fem_snapshot
 
 end module m_transport_fem

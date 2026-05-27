@@ -20,6 +20,7 @@ module m_diffusion_fem
                                   petsc_assemble_diff_mats, petsc_setup_ksp_group, &
                                   petsc_destroy_diff_state
     use m_power_iteration, only: PowerIteration
+    use m_output_fem,      only: export_diffusion_vtk_fem
     use petscsys
     use petscvec
     use petscmat
@@ -45,6 +46,13 @@ module m_diffusion_fem
     real(dp), allocatable, save :: s_d_prod_dense(:,:)
     integer, save :: s_d_n_groups = 0
     integer, save :: s_d_n_nodes  = 0
+
+    ! Snapshot state
+    logical,            save :: s_d_have_snap  = .false.
+    character(len=256), save :: s_d_snap_dir   = ""
+    character(len=256), save :: s_d_snap_tag   = ""
+    integer,            save :: s_d_vtk_refine = 4
+    integer,            save :: s_d_snap_count = 0
 
 contains
 
@@ -320,7 +328,7 @@ contains
     subroutine SolveDiffusion_FEM(mesh, FE, Quad, QuadFace, mats,   &
                                    solver_type, preconditioner, ref_ids, &
                                    max_outer, tol, is_eigenvalue, is_adjoint, &
-                                   phi_out, k_eff_out)
+                                   phi_out, k_eff_out, snap_dir, snap_tag, vtk_ref)
         type(t_mesh_fem),   intent(in), target :: mesh
         type(t_basis_fem), intent(in), target :: FE
         type(t_quadrature), intent(in)         :: Quad, QuadFace
@@ -332,6 +340,8 @@ contains
         logical,            intent(in)         :: is_eigenvalue, is_adjoint
         real(dp), allocatable, intent(out)     :: phi_out(:,:)
         real(dp),              intent(out)     :: k_eff_out
+        character(len=*), optional, intent(in) :: snap_dir, snap_tag
+        integer,          optional, intent(in) :: vtk_ref
 
         integer :: g, ss, n_uniq
         type(t_bc_config)    :: bc_vac
@@ -345,6 +355,14 @@ contains
         s_d_mats     => mats
         s_d_n_groups = mesh%n_groups
         s_d_n_nodes  = mesh%n_nodes
+
+        s_d_have_snap = present(snap_dir) .and. present(snap_tag)
+        if (s_d_have_snap) then
+            s_d_snap_dir   = trim(snap_dir)
+            s_d_snap_tag   = trim(snap_tag)
+            s_d_vtk_refine = merge(vtk_ref, 4, present(vtk_ref))
+            s_d_snap_count = 0
+        end if
 
         call petsc_destroy_diff_state(s_d_KSPs, s_d_X_petsc, s_d_MAT_F, s_d_MAT_S, &
                                        s_d_FixedSrc, s_d_tmp_b, s_d_tmp_x, s_d_tmp_valid)
@@ -384,9 +402,16 @@ contains
 
         allocate(phi_out(mesh%n_nodes, mesh%n_groups), source=1.0_dp)
 
-        call PowerIteration(phi_out, k_eff_out, max_outer, tol, &
-                             is_eigenvalue, is_adjoint,          &
-                             diffusion_source_fem, diffusion_solve_fem, diffusion_production_fem)
+        if (s_d_have_snap) then
+            call PowerIteration(phi_out, k_eff_out, max_outer, tol, &
+                                 is_eigenvalue, is_adjoint, &
+                                 diffusion_source_fem, diffusion_solve_fem, diffusion_production_fem, &
+                                 snapshot_export=diff_fem_snapshot)
+        else
+            call PowerIteration(phi_out, k_eff_out, max_outer, tol, &
+                                 is_eigenvalue, is_adjoint, &
+                                 diffusion_source_fem, diffusion_solve_fem, diffusion_production_fem)
+        end if
     end subroutine SolveDiffusion_FEM
 
     subroutine diffusion_source_fem(src, flux, k_eff, is_eigenvalue, is_adjoint)
@@ -492,5 +517,18 @@ contains
             end if
         end do
     end subroutine collect_vacuum_ids_fem
+
+    subroutine diff_fem_snapshot(flux, k_eff, iter)
+        real(dp), intent(in) :: flux(:,:)
+        real(dp), intent(in) :: k_eff
+        integer,  intent(in) :: iter
+        character(len=32)  :: lbl
+        character(len=512) :: stag
+        s_d_snap_count = s_d_snap_count + 1
+        write(lbl,'(A,I4.4)') "snap", s_d_snap_count
+        stag = trim(s_d_snap_tag) // "_" // trim(lbl)
+        call export_diffusion_vtk_fem(trim(s_d_snap_dir), trim(stag), &
+            s_d_mesh, s_d_FE, flux, s_d_n_groups, s_d_vtk_refine)
+    end subroutine diff_fem_snapshot
 
 end module m_diffusion_fem

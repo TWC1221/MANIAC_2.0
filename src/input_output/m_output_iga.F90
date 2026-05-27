@@ -150,7 +150,7 @@ contains
     ! ------------------------------------------------------------------
     subroutine export_transport_vtk_patchiga(outdir, tag, mesh, FE, QuadSn, &
                                               scalar_flux_patch, PD, n_groups, &
-                                              refine_level, ang_flux, ang_out)
+                                              refine_level, ang_flux, ang_out, label)
         character(len=*),             intent(in)           :: outdir, tag
         type(t_mesh_iga),             intent(in)           :: mesh
         type(t_basis_iga),           intent(in)           :: FE
@@ -160,9 +160,14 @@ contains
         integer,                      intent(in)           :: n_groups, refine_level
         real(dp), optional,           intent(in)           :: ang_flux(:,:,:)
         logical,  optional,           intent(in)           :: ang_out
+        character(len=*), optional,   intent(in)           :: label
 
         real(dp), allocatable :: flux_elem(:,:), ang_flux_elem(:,:,:)
         integer :: ee, pp, a, pdof, nb, g, mm, n_angles
+        character(len=32) :: lbl
+
+        lbl = "iga_pdg"
+        if (present(label)) lbl = trim(label)
 
         nb = PD%n_basis_patch
         allocate(flux_elem(mesh%n_elems * FE%n_basis, n_groups))
@@ -194,16 +199,16 @@ contains
                     end do
                 end do
                 call export_transport_vtk_iga(outdir, tag, mesh, FE, QuadSn, flux_elem, &
-                                               n_groups, refine_level, label="iga_pdg", &
+                                               n_groups, refine_level, label=trim(lbl), &
                                                ang_flux=ang_flux_elem, ang_out=.true.)
                 deallocate(ang_flux_elem)
             else
                 call export_transport_vtk_iga(outdir, tag, mesh, FE, QuadSn, flux_elem, &
-                                               n_groups, refine_level, label="iga_pdg")
+                                               n_groups, refine_level, label=trim(lbl))
             end if
         else
             call export_transport_vtk_iga(outdir, tag, mesh, FE, QuadSn, flux_elem, &
-                                           n_groups, refine_level, label="iga_pdg")
+                                           n_groups, refine_level, label=trim(lbl))
         end if
 
         deallocate(flux_elem)

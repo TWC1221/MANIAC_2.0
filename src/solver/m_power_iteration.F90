@@ -48,6 +48,15 @@ module m_power_iteration
             logical,  intent(in)  :: is_adjoint
         end subroutine production_fn
 
+        ! Optional on-demand snapshot: called when SNAPSHOT trigger file is detected.
+        ! Caller exports the current flux to VTK and returns; iteration continues.
+        subroutine snapshot_fn(flux, k_eff, iter)
+            import :: dp
+            real(dp), intent(in) :: flux(:,:)
+            real(dp), intent(in) :: k_eff
+            integer,  intent(in) :: iter
+        end subroutine snapshot_fn
+
     end interface
 
 contains
@@ -62,19 +71,22 @@ contains
     ! ------------------------------------------------------------------
     subroutine PowerIteration(flux, k_eff, max_outer, tol, &
                                is_eigenvalue, is_adjoint,   &
-                               build_source, do_solve, compute_prod)
-        real(dp), intent(inout)      :: flux(:,:)
-        real(dp), intent(out)        :: k_eff
-        integer,  intent(in)         :: max_outer
-        real(dp), intent(in)         :: tol
-        logical,  intent(in)         :: is_eigenvalue, is_adjoint
-        procedure(source_fn)         :: build_source
-        procedure(solve_fn)          :: do_solve
-        procedure(production_fn)     :: compute_prod
+                               build_source, do_solve, compute_prod, &
+                               snapshot_export)
+        real(dp), intent(inout)           :: flux(:,:)
+        real(dp), intent(out)             :: k_eff
+        integer,  intent(in)              :: max_outer
+        real(dp), intent(in)              :: tol
+        logical,  intent(in)              :: is_eigenvalue, is_adjoint
+        procedure(source_fn)              :: build_source
+        procedure(solve_fn)               :: do_solve
+        procedure(production_fn)          :: compute_prod
+        procedure(snapshot_fn), optional  :: snapshot_export
 
         real(dp), allocatable :: src(:,:), flux_old(:,:)
         real(dp) :: prod_new, prod_old, k_eff_old, err_phi, err_k, norm_phi, norm_old
-        integer  :: outer
+        integer  :: outer, u_snap
+        logical  :: snap_exists
         integer, parameter :: PRINT_STRIDE_EIG = 10, PRINT_STRIDE_FS = 5
 
         allocate(src    (size(flux,1), size(flux,2)), source=0.0_dp)
@@ -132,6 +144,19 @@ contains
                     return
                 end if
                 if (mod(outer, PRINT_STRIDE_FS) == 0) norm_old = norm_phi
+            end if
+
+            ! ---- On-demand VTK snapshot trigger --------------------------------
+            inquire(file="SNAPSHOT", exist=snap_exists)
+            if (snap_exists) then
+                if (present(snapshot_export)) then
+                    write(*,'(A)') " |-----------------------------------------------------------------------|"
+                    write(*,'(A, I5, A, F12.8, T74, A)') &
+                        " |  [SNAP] iter", outer, "  k_eff = ", k_eff, "|"
+                    call snapshot_export(flux, k_eff, outer)
+                end if
+                open(newunit=u_snap, file="SNAPSHOT")
+                close(u_snap, status='delete')
             end if
 
             if (err_phi < tol .and. (err_k < tol .or. .not. is_eigenvalue)) then
