@@ -5,7 +5,11 @@
 
 ! IGA diffusion solver: element assembly, BC application, and power iteration.
 !
+! t_iga_diffusion extends t_solver and owns all solver state (PETSc handles,
+! flux arrays) as components, eliminating module-level save variables.
+!
 ! Public:
+!   t_iga_diffusion     -- concrete solver type
 !   SolveDiffusion      -- high-level entry: assemble + power iteration
 !   assemble_petsc_iga  -- PETSc matrices (A, F, S, ProdVec, FixedSrc)
 !   apply_bcs_iga       -- Robin (vacuum/albedo) and Dirichlet BCs
@@ -18,40 +22,39 @@ module m_diffusion_iga
     use m_petsc,           only: setup_ksp, petsc_build_sparsity, petsc_create_diff_mats, &
                                   petsc_assemble_diff_mats, petsc_setup_ksp_group, &
                                   petsc_destroy_diff_state
-    use m_power_iteration, only: PowerIteration
+    use m_power_iteration, only: t_solver, PowerIteration
     use m_output_iga,      only: export_diffusion_vtk_iga
     use petscsys
     use petscvec
     use petscmat
     use petscksp
     implicit none
-    public :: SolveDiffusion
+    public :: t_iga_diffusion, SolveDiffusion
     public :: assemble_petsc_iga, apply_bcs_iga
 
     ! ------------------------------------------------------------------
-    ! Module-level saved state — set by SolveDiffusion, read by callbacks.
+    ! Concrete IGA diffusion solver.
+    ! All state previously held in module-level save variables lives here.
     ! ------------------------------------------------------------------
-    type(t_mesh_iga),   pointer, save :: s_d_mesh    => null()
-    type(t_basis_iga), pointer, save :: s_d_FE      => null()
-    type(t_material),   pointer, save :: s_d_mats(:) => null()
-
-    KSP, allocatable, save :: s_d_KSPs(:)
-    Vec, allocatable, save :: s_d_X_petsc(:)
-    Mat, allocatable, save :: s_d_MAT_F(:,:)
-    Mat, allocatable, save :: s_d_MAT_S(:,:)
-    Vec, allocatable, save :: s_d_FixedSrc(:)
-    Vec, save              :: s_d_tmp_b, s_d_tmp_x
-    logical, save          :: s_d_tmp_valid = .false.
-    real(dp), allocatable, save :: s_d_prod_dense(:,:)
-    integer, save :: s_d_n_groups = 0
-    integer, save :: s_d_n_nodes  = 0
-
-    ! Snapshot state
-    logical,            save :: s_d_have_snap  = .false.
-    character(len=256), save :: s_d_snap_dir   = ""
-    character(len=256), save :: s_d_snap_tag   = ""
-    integer,            save :: s_d_vtk_refine = 4
-    integer,            save :: s_d_snap_count = 0
+    type, extends(t_solver) :: t_iga_diffusion
+        type(t_mesh_iga),   pointer :: mesh    => null()
+        type(t_basis_iga),  pointer :: FE      => null()
+        type(t_material),   pointer :: mats(:) => null()
+        KSP, allocatable :: KSPs(:)
+        Vec, allocatable :: X_petsc(:)
+        Mat, allocatable :: MAT_F(:,:), MAT_S(:,:)
+        Vec, allocatable :: FixedSrc(:)
+        Vec  :: tmp_b, tmp_x
+        logical :: tmp_valid = .false.
+        real(dp), allocatable :: prod_dense(:,:)
+        integer :: n_groups = 0
+        integer :: n_nodes  = 0
+    contains
+        procedure :: build_source => iga_diff_build_source
+        procedure :: do_solve     => iga_diff_do_solve
+        procedure :: compute_prod => iga_diff_compute_prod
+        procedure :: snapshot     => iga_diff_snapshot
+    end type t_iga_diffusion
 
 contains
 
@@ -63,7 +66,7 @@ contains
         Mat, allocatable, intent(out) :: A_MAT(:), MAT_F(:,:), MAT_S(:,:)
         Vec, allocatable, intent(out) :: PROD_VEC(:), FixedSrc(:)
         type(t_mesh_iga),   intent(in) :: mesh
-        type(t_basis_iga), intent(in) :: FE
+        type(t_basis_iga),  intent(in) :: FE
         type(t_quadrature), intent(in) :: Quad
         type(t_material),   intent(in) :: mats(:)
         integer,            intent(in) :: n_groups
@@ -95,7 +98,7 @@ contains
                                        A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, count)
         integer,            intent(in)    :: ee, n_groups
         type(t_mesh_iga),   intent(in)    :: mesh
-        type(t_basis_iga), intent(in)    :: FE
+        type(t_basis_iga),  intent(in)    :: FE
         type(t_quadrature), intent(in)    :: Quad
         type(t_material),   intent(in)    :: mats(:)
         logical,            intent(in)    :: is_adjoint
@@ -226,9 +229,8 @@ contains
         end select
     end subroutine apply_bcs_iga
 
-! ------------------------------------------------------------------
+    ! ------------------------------------------------------------------
     ! Robin BC — 1D edge integral (2D mesh) or 2D surface integral (3D).
-    ! Uses element-centric EvalNURBS2D for 3D boundary integrals.
     ! ------------------------------------------------------------------
     subroutine iga_robin_petsc(mesh, QuadBound, target_id, alpha, A)
         type(t_mesh_iga),   intent(in)    :: mesh
@@ -243,14 +245,12 @@ contains
         real(dp) :: dx_du, dy_du
         PetscErrorCode :: ierr
 
-        ! 3D Surface specific variables
         type(t_basis_iga) :: surf_FE
         integer :: p, q, ncp_local, ee_surf, span_xi, span_eta
         real(dp) :: v1, v2, eta, det_2d
         real(dp) :: dx_dv, dy_dv, dz_dv, dz_du
         real(dp) :: nx, ny, nz
 
-        ! Flexible arrays scoped appropriately per configuration
         real(dp), allocatable :: R(:), dR_du(:), dR_dv(:)
         real(dp), allocatable :: surf_w(:)
         PetscInt, allocatable  :: enodes(:)
@@ -260,16 +260,16 @@ contains
 
         do s = 1, size(mesh%iga_surfaces)
             if (mesh%iga_surfaces(s)%bc_id /= target_id) cycle
-            
+
             n_knots_xi = size(mesh%iga_surfaces(s)%knots_xi)
 
             if (mesh%dim == 2) then
                 ncp_global = size(mesh%iga_surfaces(s)%cp_ids)
-                
+
                 allocate(enodes(ncp_global), vals(ncp_global*ncp_global))
                 allocate(R(ncp_global), dR_du(ncp_global))
                 allocate(surf_w(ncp_global))
-                
+
                 surf_w = mesh%weights(mesh%iga_surfaces(s)%cp_ids)
                 enodes = mesh%iga_surfaces(s)%cp_ids - 1
                 vals   = 0.0_dp
@@ -278,19 +278,19 @@ contains
                     u1 = mesh%iga_surfaces(s)%knots_xi(i_span)
                     u2 = mesh%iga_surfaces(s)%knots_xi(i_span+1)
                     if (abs(u2-u1) < 1.0e-10_dp) cycle
-                    
+
                     do gp = 1, QuadBound%n_points
                         xi        = 0.5_dp * ((u2-u1)*QuadBound%xi(gp) + (u2+u1))
                         det_param = 0.5_dp * (u2 - u1)
-                        
+
                         R = 0.0_dp; dR_du = 0.0_dp
                         call EvalNURBS1D(mesh%order, i_span, mesh%iga_surfaces(s)%knots_xi, surf_w, xi, R, dR_du)
-                        
+
                         dx_du = dot_product(mesh%nodes(mesh%iga_surfaces(s)%cp_ids, 1), dR_du)
                         dy_du = dot_product(mesh%nodes(mesh%iga_surfaces(s)%cp_ids, 2), dR_du)
-                        
+
                         dV = sqrt(dx_du**2 + dy_du**2) * det_param * QuadBound%weights(gp) * beta
-                        
+
                         do row_b = 1, ncp_global
                             do col_b = 1, ncp_global
                                 vals((row_b-1)*ncp_global+col_b) = vals((row_b-1)*ncp_global+col_b) + &
@@ -299,59 +299,59 @@ contains
                         end do
                     end do
                 end do
-                
+
                 call MatSetValues(A, ncp_global, enodes, ncp_global, enodes, vals, ADD_VALUES, ierr)
                 deallocate(enodes, vals, R, dR_du, surf_w)
 
             else
                 p = mesh%order
-                q = mesh%order  
+                q = mesh%order
                 ncp_local = (p + 1) * (q + 1)
-                
+
                 allocate(enodes(ncp_local), vals(ncp_local * ncp_local))
                 allocate(R(ncp_local), dR_du(ncp_local), dR_dv(ncp_local))
-                
+
                 surf_FE%p_order = p
                 surf_FE%q_order = q
-                
+
                 do ee_surf = 1, mesh%iga_surfaces(s)%n_elements
-                    
+
                     span_xi  = mesh%iga_surfaces(s)%elem_span_indices(1, ee_surf)
                     span_eta = mesh%iga_surfaces(s)%elem_span_indices(2, ee_surf)
-                    
+
                     u1 = mesh%iga_surfaces(s)%knots_xi(span_xi)
                     u2 = mesh%iga_surfaces(s)%knots_xi(span_xi + 1)
                     if (abs(u2 - u1) < 1.0e-10_dp) cycle
-                    
+
                     v1 = mesh%iga_surfaces(s)%knots_eta(span_eta)
                     v2 = mesh%iga_surfaces(s)%knots_eta(span_eta + 1)
                     if (abs(v2 - v1) < 1.0e-10_dp) cycle
-                    
+
                     enodes = mesh%iga_surfaces(s)%elems(ee_surf, 1:ncp_local)
                     vals = 0.0_dp
-                    
+
                     do gp = 1, QuadBound%n_points
                         xi        = 0.5_dp * ((u2 - u1) * QuadBound%xi(gp)  + (u2 + u1))
                         eta       = 0.5_dp * ((v2 - v1) * QuadBound%eta(gp) + (v2 + v1))
                         det_param = 0.25_dp * (u2 - u1) * (v2 - v1)
-                        
+
                         call EvalNURBS2D(surf_FE, ee_surf, mesh%iga_surfaces(s), mesh%weights, xi, eta, R, dR_du, dR_dv)
-                        
+
                         dx_du = dot_product(mesh%nodes(enodes, 1), dR_du)
                         dy_du = dot_product(mesh%nodes(enodes, 2), dR_du)
                         dz_du = dot_product(mesh%nodes(enodes, 3), dR_du)
-                        
+
                         dx_dv = dot_product(mesh%nodes(enodes, 1), dR_dv)
                         dy_dv = dot_product(mesh%nodes(enodes, 2), dR_dv)
                         dz_dv = dot_product(mesh%nodes(enodes, 3), dR_dv)
-                        
+
                         nx = dy_du*dz_dv - dz_du*dy_dv
                         ny = dz_du*dx_dv - dx_du*dz_dv
                         nz = dx_du*dy_dv - dy_du*dx_dv
                         det_2d = sqrt(nx**2 + ny**2 + nz**2)
-                        
+
                         dV = det_2d * det_param * QuadBound%weights(gp) * beta
-                        
+
                         do row_b = 1, ncp_local
                             do col_b = 1, ncp_local
                                 vals((row_b-1)*ncp_local + col_b) = vals((row_b-1)*ncp_local + col_b) + &
@@ -359,24 +359,105 @@ contains
                             end do
                         end do
                     end do
-                    
+
                     call MatSetValues(A, ncp_local, enodes - 1, ncp_local, enodes - 1, vals, ADD_VALUES, ierr)
                 end do
-                
+
                 deallocate(enodes, vals, R, dR_du, dR_dv)
             end if
         end do
     end subroutine iga_robin_petsc
 
+    ! ================================================================== !
+    !  Type-bound procedure implementations for t_iga_diffusion            !
+    ! ================================================================== !
+
+    subroutine iga_diff_build_source(self, src, k_eff, is_eigenvalue, is_adjoint)
+        class(t_iga_diffusion), intent(inout) :: self
+        real(dp), intent(inout) :: src(:,:)
+        real(dp), intent(in)    :: k_eff
+        logical,  intent(in)    :: is_eigenvalue, is_adjoint
+        integer        :: g, gp
+        PetscErrorCode :: ierr
+        PetscScalar, pointer :: parr(:)
+        src = 0.0_dp
+        do g = 1, self%n_groups
+            if (.not. is_eigenvalue) then
+                call VecGetArrayRead(self%FixedSrc(g), parr, ierr)
+                src(:,g) = parr(:)
+                call VecRestoreArrayRead(self%FixedSrc(g), parr, ierr)
+            end if
+            do gp = 1, self%n_groups
+                call VecGetArray(self%tmp_x, parr, ierr)
+                parr(:) = self%scalar_flux(:,gp)
+                call VecRestoreArray(self%tmp_x, parr, ierr)
+                if (gp /= g) then
+                    call MatMult(self%MAT_S(g,gp), self%tmp_x, self%tmp_b, ierr)
+                    call VecGetArrayRead(self%tmp_b, parr, ierr)
+                    src(:,g) = src(:,g) + parr(:)
+                    call VecRestoreArrayRead(self%tmp_b, parr, ierr)
+                end if
+                if (is_eigenvalue) then
+                    call MatMult(self%MAT_F(g,gp), self%tmp_x, self%tmp_b, ierr)
+                    call VecGetArrayRead(self%tmp_b, parr, ierr)
+                    src(:,g) = src(:,g) + parr(:) / k_eff
+                    call VecRestoreArrayRead(self%tmp_b, parr, ierr)
+                end if
+            end do
+        end do
+    end subroutine iga_diff_build_source
+
+    subroutine iga_diff_do_solve(self, src)
+        class(t_iga_diffusion), intent(inout) :: self
+        real(dp), intent(in) :: src(:,:)
+        integer        :: g
+        PetscErrorCode :: ierr
+        PetscScalar, pointer :: parr(:)
+        do g = 1, self%n_groups
+            call VecGetArray(self%tmp_b, parr, ierr)
+            parr(:) = src(:,g)
+            call VecRestoreArray(self%tmp_b, parr, ierr)
+            call KSPSolve(self%KSPs(g), self%tmp_b, self%X_petsc(g), ierr)
+            call VecGetArrayRead(self%X_petsc(g), parr, ierr)
+            self%scalar_flux(:,g) = parr(:)
+            call VecRestoreArrayRead(self%X_petsc(g), parr, ierr)
+        end do
+    end subroutine iga_diff_do_solve
+
+    subroutine iga_diff_compute_prod(self, prod, is_adjoint)
+        class(t_iga_diffusion), intent(inout) :: self
+        real(dp), intent(out) :: prod
+        logical,  intent(in)  :: is_adjoint
+        integer :: g
+        prod = 0.0_dp
+        do g = 1, self%n_groups
+            prod = prod + dot_product(self%prod_dense(:,g), self%scalar_flux(:,g))
+        end do
+    end subroutine iga_diff_compute_prod
+
+    subroutine iga_diff_snapshot(self, k_eff, iter)
+        class(t_iga_diffusion), intent(inout) :: self
+        real(dp), intent(in) :: k_eff
+        integer,  intent(in) :: iter
+        character(len=32)  :: lbl
+        character(len=512) :: stag
+        self%snap_count = self%snap_count + 1
+        write(lbl,'(A,I4.4)') "snap", self%snap_count
+        stag = trim(self%snap_tag) // "_" // trim(lbl)
+        call export_diffusion_vtk_iga(trim(self%snap_dir), trim(stag), &
+            self%mesh, self%FE, self%scalar_flux, self%n_groups, self%vtk_refine)
+    end subroutine iga_diff_snapshot
+
     ! ==================================================================
     ! High-level entry point.
     ! ==================================================================
-    subroutine SolveDiffusion(mesh, FE, Quad, QuadBound, mats,   &
+    subroutine SolveDiffusion(solver, mesh, FE, Quad, QuadBound, mats,   &
                                solver_type, preconditioner, ref_ids, &
                                max_outer, tol, is_eigenvalue, is_adjoint, &
-                               phi_out, k_eff_out, snap_dir, snap_tag, vtk_ref)
+                               k_eff_out, snap_dir, snap_tag, vtk_ref)
+        type(t_iga_diffusion), intent(out)     :: solver
         type(t_mesh_iga),   intent(in), target :: mesh
-        type(t_basis_iga), intent(in), target :: FE
+        type(t_basis_iga),  intent(in), target :: FE
         type(t_quadrature), intent(in)         :: Quad, QuadBound
         type(t_material),   intent(in), target :: mats(:)
         integer,            intent(in)         :: solver_type, preconditioner
@@ -384,7 +465,6 @@ contains
         integer,            intent(in)         :: max_outer
         real(dp),           intent(in)         :: tol
         logical,            intent(in)         :: is_eigenvalue, is_adjoint
-        real(dp), allocatable, intent(out)     :: phi_out(:,:)
         real(dp),              intent(out)     :: k_eff_out
         character(len=*), optional, intent(in) :: snap_dir, snap_tag
         integer,          optional, intent(in) :: vtk_ref
@@ -396,22 +476,20 @@ contains
         Mat, allocatable :: loc_A(:), loc_MF(:,:), loc_MS(:,:)
         Vec, allocatable :: loc_PV(:), loc_FS(:)
 
-        s_d_mesh     => mesh
-        s_d_FE       => FE
-        s_d_mats     => mats
-        s_d_n_groups = mesh%n_groups
-        s_d_n_nodes  = mesh%n_nodes
+        solver%mesh     => mesh
+        solver%FE       => FE
+        solver%mats     => mats
+        solver%n_groups  = mesh%n_groups
+        solver%n_nodes   = mesh%n_nodes
+        solver%tmp_valid = .false.
 
-        s_d_have_snap = present(snap_dir) .and. present(snap_tag)
-        if (s_d_have_snap) then
-            s_d_snap_dir   = trim(snap_dir)
-            s_d_snap_tag   = trim(snap_tag)
-            s_d_vtk_refine = merge(vtk_ref, 4, present(vtk_ref))
-            s_d_snap_count = 0
+        solver%have_snap = present(snap_dir) .and. present(snap_tag)
+        if (solver%have_snap) then
+            solver%snap_dir   = trim(snap_dir)
+            solver%snap_tag   = trim(snap_tag)
+            solver%vtk_refine = merge(vtk_ref, 4, present(vtk_ref))
+            solver%snap_count = 0
         end if
-
-        call petsc_destroy_diff_state(s_d_KSPs, s_d_X_petsc, s_d_MAT_F, s_d_MAT_S, &
-                                       s_d_FixedSrc, s_d_tmp_b, s_d_tmp_x, s_d_tmp_valid)
 
         call assemble_petsc_iga(loc_A, loc_MF, loc_MS, loc_PV, loc_FS, &
                                  mesh, FE, Quad, mats, mesh%n_groups, is_adjoint)
@@ -426,117 +504,46 @@ contains
         end do
         deallocate(uniq_bc_ids)
 
-        allocate(s_d_MAT_F(mesh%n_groups, mesh%n_groups), &
-                 s_d_MAT_S(mesh%n_groups, mesh%n_groups), &
-                 s_d_FixedSrc(mesh%n_groups))
-        s_d_MAT_F    = loc_MF
-        s_d_MAT_S    = loc_MS
-        s_d_FixedSrc = loc_FS
+        allocate(solver%MAT_F(mesh%n_groups, mesh%n_groups), &
+                 solver%MAT_S(mesh%n_groups, mesh%n_groups), &
+                 solver%FixedSrc(mesh%n_groups))
+        solver%MAT_F    = loc_MF
+        solver%MAT_S    = loc_MS
+        solver%FixedSrc = loc_FS
         deallocate(loc_MF, loc_MS, loc_FS)
 
         call petsc_setup_ksp_group(loc_A, mesh%n_nodes, mesh%n_groups, &
-                                    solver_type, preconditioner, s_d_KSPs, s_d_X_petsc)
+                                    solver_type, preconditioner, solver%KSPs, solver%X_petsc)
         deallocate(loc_A)
 
-        call extract_prod_dense(loc_PV, mesh%n_groups, mesh%n_nodes)
+        call extract_prod_dense(loc_PV, mesh%n_groups, mesh%n_nodes, solver%prod_dense)
         do g = 1, mesh%n_groups; call VecDestroy(loc_PV(g), ierr); end do
         deallocate(loc_PV)
 
-        call VecCreateSeq(PETSC_COMM_SELF, mesh%n_nodes, s_d_tmp_b, ierr)
-        call VecCreateSeq(PETSC_COMM_SELF, mesh%n_nodes, s_d_tmp_x, ierr)
-        s_d_tmp_valid = .true.
+        call VecCreateSeq(PETSC_COMM_SELF, mesh%n_nodes, solver%tmp_b, ierr)
+        call VecCreateSeq(PETSC_COMM_SELF, mesh%n_nodes, solver%tmp_x, ierr)
+        solver%tmp_valid = .true.
 
-        ! Initialize flux with a non-zero guess for Power Iteration
-        allocate(phi_out(mesh%n_nodes, mesh%n_groups), source=1.0_dp)
+        allocate(solver%scalar_flux(mesh%n_nodes, mesh%n_groups), source=1.0_dp)
 
-        if (s_d_have_snap) then
-            call PowerIteration(phi_out, k_eff_out, max_outer, tol, &
-                                 is_eigenvalue, is_adjoint, &
-                                 diffusion_source, diffusion_solve, diffusion_production, &
-                                 snapshot_export=diff_iga_snapshot)
-        else
-            call PowerIteration(phi_out, k_eff_out, max_outer, tol, &
-                                 is_eigenvalue, is_adjoint, &
-                                 diffusion_source, diffusion_solve, diffusion_production)
-        end if
+        call PowerIteration(solver, k_eff_out, max_outer, tol, is_eigenvalue, is_adjoint)
+
+        call petsc_destroy_diff_state(solver%KSPs, solver%X_petsc, solver%MAT_F, solver%MAT_S, &
+                                       solver%FixedSrc, solver%tmp_b, solver%tmp_x, solver%tmp_valid)
     end subroutine SolveDiffusion
 
-    subroutine diffusion_source(src, flux, k_eff, is_eigenvalue, is_adjoint)
-        real(dp), intent(inout) :: src(:,:)
-        real(dp), intent(in)    :: flux(:,:), k_eff
-        logical,  intent(in)    :: is_eigenvalue, is_adjoint
-        integer        :: g, gp
-        PetscErrorCode :: ierr
-        PetscScalar, pointer :: parr(:)
-        src = 0.0_dp
-        do g = 1, s_d_n_groups
-            if (.not. is_eigenvalue) then
-                call VecGetArrayRead(s_d_FixedSrc(g), parr, ierr)
-                src(:,g) = parr(:)
-                call VecRestoreArrayRead(s_d_FixedSrc(g), parr, ierr)
-            end if
-            do gp = 1, s_d_n_groups
-                call VecGetArray(s_d_tmp_x, parr, ierr)
-                parr(:) = flux(:,gp)
-                call VecRestoreArray(s_d_tmp_x, parr, ierr)
-                if (gp /= g) then
-                    call MatMult(s_d_MAT_S(g,gp), s_d_tmp_x, s_d_tmp_b, ierr)
-                    call VecGetArrayRead(s_d_tmp_b, parr, ierr)
-                    src(:,g) = src(:,g) + parr(:)
-                    call VecRestoreArrayRead(s_d_tmp_b, parr, ierr)
-                end if
-                if (is_eigenvalue) then
-                    call MatMult(s_d_MAT_F(g,gp), s_d_tmp_x, s_d_tmp_b, ierr)
-                    call VecGetArrayRead(s_d_tmp_b, parr, ierr)
-                    src(:,g) = src(:,g) + parr(:) / k_eff
-                    call VecRestoreArrayRead(s_d_tmp_b, parr, ierr)
-                end if
-            end do
-        end do
-    end subroutine diffusion_source
-
-    subroutine diffusion_solve(flux, src)
-        real(dp), intent(inout) :: flux(:,:)
-        real(dp), intent(in)    :: src(:,:)
-        integer        :: g
-        PetscErrorCode :: ierr
-        PetscScalar, pointer :: parr(:)
-
-        do g = 1, s_d_n_groups
-            call VecGetArray(s_d_tmp_b, parr, ierr)
-            parr(:) = src(:,g)
-            call VecRestoreArray(s_d_tmp_b, parr, ierr)
-            call KSPSolve(s_d_KSPs(g), s_d_tmp_b, s_d_X_petsc(g), ierr)
-            call VecGetArrayRead(s_d_X_petsc(g), parr, ierr)
-            flux(:,g) = parr(:)
-            call VecRestoreArrayRead(s_d_X_petsc(g), parr, ierr)
-        end do
-    end subroutine diffusion_solve
-
-    subroutine diffusion_production(prod, flux, is_adjoint)
-        real(dp), intent(out) :: prod
-        real(dp), intent(in)  :: flux(:,:)
-        logical,  intent(in)  :: is_adjoint
-        integer :: g
-
-        prod = 0.0_dp
-        do g = 1, s_d_n_groups
-            prod = prod + dot_product(s_d_prod_dense(:,g), flux(:,g))
-        end do
-    end subroutine diffusion_production
-
-    subroutine extract_prod_dense(prod_vecs, n_groups, n_nodes)
-        Vec,     intent(in) :: prod_vecs(:)
-        integer, intent(in) :: n_groups, n_nodes
+    subroutine extract_prod_dense(prod_vecs, n_groups, n_nodes, prod_dense_out)
+        Vec,     intent(in)  :: prod_vecs(:)
+        integer, intent(in)  :: n_groups, n_nodes
+        real(dp), allocatable, intent(out) :: prod_dense_out(:,:)
         integer :: g
         PetscErrorCode :: ierr
         PetscScalar, pointer :: parr(:)
 
-        if (allocated(s_d_prod_dense)) deallocate(s_d_prod_dense)
-        allocate(s_d_prod_dense(n_nodes, n_groups))
+        allocate(prod_dense_out(n_nodes, n_groups))
         do g = 1, n_groups
             call VecGetArrayRead(prod_vecs(g), parr, ierr)
-            s_d_prod_dense(:,g) = parr(:)
+            prod_dense_out(:,g) = parr(:)
             call VecRestoreArrayRead(prod_vecs(g), parr, ierr)
         end do
     end subroutine extract_prod_dense
@@ -564,18 +571,5 @@ contains
             end if
         end do
     end subroutine collect_vacuum_ids
-
-    subroutine diff_iga_snapshot(flux, k_eff, iter)
-        real(dp), intent(in) :: flux(:,:)
-        real(dp), intent(in) :: k_eff
-        integer,  intent(in) :: iter
-        character(len=32)  :: lbl
-        character(len=512) :: stag
-        s_d_snap_count = s_d_snap_count + 1
-        write(lbl,'(A,I4.4)') "snap", s_d_snap_count
-        stag = trim(s_d_snap_tag) // "_" // trim(lbl)
-        call export_diffusion_vtk_iga(trim(s_d_snap_dir), trim(stag), &
-            s_d_mesh, s_d_FE, flux, s_d_n_groups, s_d_vtk_refine)
-    end subroutine diff_iga_snapshot
 
 end module m_diffusion_iga

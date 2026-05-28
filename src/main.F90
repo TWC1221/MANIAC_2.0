@@ -21,10 +21,10 @@ program maniac
     use m_basis_fem,               only: InitialiseLagrangeBasis
     use m_transport_precompute_iga, only: InitialiseTransport_SpanDG, InitialiseTransport_PatchDG
     use m_transport_precompute_fem, only: InitialiseTransport_FEM, InitialiseGeometry_FEM
-    use m_transport_iga_pdg,        only: SolveTransport_IGA
-    use m_transport_fem,            only: SolveTransport_FEM
-    use m_diffusion_iga,            only: SolveDiffusion
-    use m_diffusion_fem,            only: SolveDiffusion_FEM
+    use m_transport_iga_pdg,        only: SolveTransport_IGA, t_iga_transport
+    use m_transport_fem,            only: SolveTransport_FEM, t_fem_transport
+    use m_diffusion_iga,            only: SolveDiffusion,     t_iga_diffusion
+    use m_diffusion_fem,            only: SolveDiffusion_FEM, t_fem_diffusion
     use m_output_iga,               only: export_transport_vtk_iga, export_diffusion_vtk_iga, &
                                           export_transport_vtk_patchiga
     use m_output_fem,               only: export_transport_vtk_fem, export_diffusion_vtk_fem
@@ -33,7 +33,7 @@ program maniac
 
     ! ---- Configuration (namelist defaults) ----------------------------
     character(len=32)  :: solver         = "transport"   ! "transport" | "diffusion"
-    character(len=256) :: mesh_file      = "input/c5g7_test.asmg"
+    character(len=256) :: mesh_file      = "input/pincell_test.asmg"
     character(len=256) :: mat_file       = "input/MATS.txt"
     character(len=256) :: output_dir     = "output"
     integer            :: sn_order       = 4
@@ -66,14 +66,17 @@ program maniac
     type(t_quadrature)                    :: QuadVol, QuadFace
     type(t_sn_quadrature)                 :: QuadSn
 
-    ! ---- Solver outputs -----------------------------------------------
-    type(t_fem_dg) :: TD
+    ! ---- Precompute structures ----------------------------------------
+    type(t_fem_dg)   :: TD
     type(t_patch_dg) :: PD
-    real(dp), allocatable :: ang_flux(:,:,:)   ! (n_dof, n_angles, n_groups)
-    real(dp), allocatable :: scalar_flux(:,:)  ! (n_dof, n_groups)
-    real(dp), allocatable :: phi(:,:)          ! diffusion: (n_nodes, n_groups)
-    real(dp)              :: k_eff
     integer,  allocatable :: sweep_order(:,:)
+
+    ! ---- Solver objects (concrete types; flux lives inside each) ------
+    type(t_iga_transport) :: iga_tran_solver
+    type(t_fem_transport) :: fem_tran_solver
+    type(t_iga_diffusion) :: iga_diff_solver
+    type(t_fem_diffusion) :: fem_diff_solver
+    real(dp) :: k_eff
 
     ! ---- PETSc --------------------------------------------------------
     PetscErrorCode :: ierr = 0
@@ -197,43 +200,43 @@ program maniac
             if (mesh_iga%DG .eqv. .false.) then
                 call InitialiseTransport_PatchDG(mesh_iga, FE_iga, QuadSn, QuadVol, QuadFace, &
                                                   mats, PD, sweep_order)
-                call SolveTransport_IGA(mesh_iga, mats, QuadSn, PD, &
-                                         scalar_flux, ang_flux, k_eff, &
+                call SolveTransport_IGA(iga_tran_solver, mesh_iga, mats, QuadSn, PD, k_eff, &
                                          sweep_order, ref_id_list, max_outer, tol, &
                                          is_adjoint, is_eigenvalue, &
                                          FE=FE_iga, snap_dir=trim(run_dir), &
                                          snap_tag=trim(nametag), vtk_ref=vtk_refine)
                 call export_transport_vtk_patchiga(trim(run_dir), trim(nametag), &
-                                                    mesh_iga, FE_iga, QuadSn, scalar_flux, PD, &
+                                                    mesh_iga, FE_iga, QuadSn, &
+                                                    iga_tran_solver%scalar_flux, PD, &
                                                     mesh_iga%n_groups, vtk_refine, &
-                                                    ang_flux=ang_flux, ang_out=ang_out)
+                                                    ang_flux=iga_tran_solver%ang_flux, ang_out=ang_out)
             else
                 call InitialiseTransport_SpanDG(mesh_iga, FE_iga, QuadSn, QuadVol, QuadFace, &
                                                  mats, PD, sweep_order)
-                call SolveTransport_IGA(mesh_iga, mats, QuadSn, PD, &
-                                         scalar_flux, ang_flux, k_eff, &
+                call SolveTransport_IGA(iga_tran_solver, mesh_iga, mats, QuadSn, PD, k_eff, &
                                          sweep_order, ref_id_list, max_outer, tol, &
                                          is_adjoint, is_eigenvalue, &
                                          FE=FE_iga, snap_dir=trim(run_dir), &
                                          snap_tag=trim(nametag), vtk_ref=vtk_refine)
                 call export_transport_vtk_iga(trim(run_dir), trim(nametag), &
-                                              mesh_iga, FE_iga, QuadSn, scalar_flux, &
+                                              mesh_iga, FE_iga, QuadSn, &
+                                              iga_tran_solver%scalar_flux, &
                                               mesh_iga%n_groups, vtk_refine, &
-                                              ang_flux=ang_flux, ang_out=ang_out)
+                                              ang_flux=iga_tran_solver%ang_flux, ang_out=ang_out)
             end if
 
         case ("fem")
             call InitialiseGeometry_FEM(mesh_fem, FE_fem, QuadSn, QuadFace, TD, sweep_order)
             call InitialiseTransport_FEM(mesh_fem, FE_fem, QuadSn, QuadVol, QuadFace, mats, TD)
-            call SolveTransport_FEM(mesh_fem, mats, FE_fem, QuadSn, TD, &
-                                     scalar_flux, ang_flux, k_eff, &
+            call SolveTransport_FEM(fem_tran_solver, mesh_fem, mats, FE_fem, QuadSn, TD, k_eff, &
                                      sweep_order, ref_id_list, max_outer, tol, &
                                      is_adjoint, is_eigenvalue, &
                                      snap_dir=trim(run_dir), snap_tag=trim(nametag), &
                                      vtk_ref=vtk_refine)
             call export_transport_vtk_fem(trim(run_dir), trim(nametag), &
-                                           mesh_fem, FE_fem, QuadSn, scalar_flux, &
-                                           mesh_fem%n_groups, vtk_refine, ang_flux, ang_out)
+                                           mesh_fem, FE_fem, QuadSn, fem_tran_solver%scalar_flux, &
+                                           mesh_fem%n_groups, vtk_refine, &
+                                           fem_tran_solver%ang_flux, ang_out)
 
         end select
 
@@ -241,24 +244,24 @@ program maniac
         select case (trim(method))
 
         case ("iga")
-            call SolveDiffusion(mesh_iga, FE_iga, QuadVol, QuadFace, mats, &
+            call SolveDiffusion(iga_diff_solver, mesh_iga, FE_iga, QuadVol, QuadFace, mats, &
                                  solver_type, preconditioner, ref_id_list, &
-                                 max_outer, tol, is_eigenvalue, is_adjoint, &
-                                 phi, k_eff, &
+                                 max_outer, tol, is_eigenvalue, is_adjoint, k_eff, &
                                  snap_dir=trim(run_dir), snap_tag=trim(nametag), &
                                  vtk_ref=vtk_refine)
             call export_diffusion_vtk_iga(trim(run_dir), trim(nametag), &
-                                          mesh_iga, FE_iga, phi, mesh_iga%n_groups, vtk_refine)
+                                          mesh_iga, FE_iga, iga_diff_solver%scalar_flux, &
+                                          mesh_iga%n_groups, vtk_refine)
 
         case ("fem")
-            call SolveDiffusion_FEM(mesh_fem, FE_fem, QuadVol, QuadFace, mats, &
+            call SolveDiffusion_FEM(fem_diff_solver, mesh_fem, FE_fem, QuadVol, QuadFace, mats, &
                                      solver_type, preconditioner, ref_id_list, &
-                                     max_outer, tol, is_eigenvalue, is_adjoint, &
-                                     phi, k_eff, &
+                                     max_outer, tol, is_eigenvalue, is_adjoint, k_eff, &
                                      snap_dir=trim(run_dir), snap_tag=trim(nametag), &
                                      vtk_ref=vtk_refine)
             call export_diffusion_vtk_fem(trim(run_dir), trim(nametag), &
-                                           mesh_fem, FE_fem, phi, mesh_fem%n_groups, vtk_refine)
+                                           mesh_fem, FE_fem, fem_diff_solver%scalar_flux, &
+                                           mesh_fem%n_groups, vtk_refine)
 
         end select
 

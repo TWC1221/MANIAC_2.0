@@ -2,45 +2,49 @@
 ! Each NURBS patch is one DG "element"; the angular flux DOF layout is
 !   global_dof = (pp-1)*n_basis_patch + local_patch_dof   (pp = 1..n_patches)
 !
-! The sweep, source, and production routines are structurally identical to
-! m_transport_iga but index over patches instead of knot spans.
+! t_iga_transport extends t_solver and owns all solver state as components,
+! eliminating module-level save variables.
 !
 ! Public:
-!   SolveTransport_IGA              -- high-level entry
-!   Transport_Sweep_Patch                -- angle sweep over patches
-!   Source_Patch_DGFEM                   -- scatter + fission source
-!   Calculate_Production_Patch_DGFEM    -- fission production for k-eff
-!   Remap_Patch_To_Elem_Flux            -- utility: map patch flux → elem layout
+!   t_iga_transport              -- concrete solver type
+!   SolveTransport_IGA           -- high-level entry (constructs type, runs iteration)
+!   Transport_Sweep_Patch        -- angle sweep over patches
+!   Source_Patch_DGFEM           -- scatter + fission source
+!   Calculate_Production_Patch_DGFEM  -- fission production for k-eff
+!   Remap_Patch_To_Elem_Flux     -- utility: map patch flux to elem layout
 module m_transport_iga_pdg
     use m_constants
     use m_types
     use m_quadrature
     use m_material
-    use m_power_iteration,  only: PowerIteration
+    use m_power_iteration,  only: t_solver, PowerIteration
     use m_output_iga,       only: export_transport_vtk_iga, export_transport_vtk_patchiga
     implicit none
-    public :: SolveTransport_IGA
+    public :: t_iga_transport, SolveTransport_IGA
     public :: Transport_Sweep_Patch, Source_Patch_DGFEM
     public :: Calculate_Production_Patch_DGFEM, Remap_Patch_To_Elem_Flux
 
-    ! Module-level context set by SolveTransport_IGA, read by callbacks.
-    type(t_mesh_iga),      pointer, save :: s_mesh    => null()
-    type(t_sn_quadrature), pointer, save :: s_sn_quad => null()
-    type(t_patch_dg),      pointer, save :: s_PD      => null()
-    type(t_material),      pointer, save :: s_mats(:) => null()
-    real(dp), allocatable, save          :: s_ang_flux(:,:,:)
-    integer,  allocatable, save          :: s_sweep_order(:,:)
-    integer,  allocatable, save          :: s_ref_ids(:)
-    integer,  save                       :: s_n_groups  = 0
-    integer,  save                       :: s_n_patches = 0
-
-    ! Snapshot state (populated only when snap_dir is provided to SolveTransport_IGA)
-    type(t_basis_iga),  save            :: s_FE_iga
-    logical,            save            :: s_have_snap  = .false.
-    character(len=256), save            :: s_snap_dir   = ""
-    character(len=256), save            :: s_snap_tag   = ""
-    integer,            save            :: s_vtk_refine = 4
-    integer,            save            :: s_snap_count = 0
+    ! ------------------------------------------------------------------
+    ! Concrete IGA-PDG/SpanDG transport solver.
+    ! All state that was previously module-level save variables lives here.
+    ! ------------------------------------------------------------------
+    type, extends(t_solver) :: t_iga_transport
+        type(t_mesh_iga),      pointer :: mesh    => null()
+        type(t_sn_quadrature), pointer :: sn_quad => null()
+        type(t_patch_dg),      pointer :: PD      => null()
+        type(t_material),      pointer :: mats(:) => null()
+        type(t_basis_iga)              :: FE
+        real(dp), allocatable :: ang_flux(:,:,:)
+        integer,  allocatable :: sweep_order(:,:)
+        integer,  allocatable :: ref_ids(:)
+        integer :: n_groups  = 0
+        integer :: n_patches = 0
+    contains
+        procedure :: build_source => iga_build_source
+        procedure :: do_solve     => iga_do_solve
+        procedure :: compute_prod => iga_compute_prod
+        procedure :: snapshot     => iga_snapshot_impl
+    end type t_iga_transport
 
     interface
         subroutine dgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info)
@@ -63,7 +67,7 @@ contains
                                       total_source, sweep_order, ref_ID)
         type(t_mesh_iga),      intent(in)    :: mesh
         type(t_sn_quadrature), intent(in)    :: sn_quad
-        type(t_patch_dg), intent(in) :: PD
+        type(t_patch_dg),      intent(in)    :: PD
         real(dp),              intent(inout) :: ang_flux(:,:,:), scalar_flux(:,:)
         real(dp),              intent(in)    :: total_source(:,:)
         integer,               intent(in)    :: sweep_order(:,:), ref_ID(:)
@@ -81,8 +85,6 @@ contains
 
         ! Snapshot ang_flux before the parallel sweep so reflective BCs can
         ! safely read paired-angle fluxes without racing concurrent writes.
-        ! This is the standard lagged-reflective approach; source iteration
-        ! converges the lag to zero at each outer level.
         if (size(ref_ID) > 0) allocate(ang_flux_snap, source=ang_flux)
 
         !$OMP PARALLEL DO &
@@ -102,22 +104,19 @@ contains
                     do f = 1, mesh%n_faces_per_elem
                         n_face = PD%n_face_basis_f(f)
                         if (PD%face_connectivity(1,f,pp) > 0) then
-                            ! Interior face: gather upwind flux from neighbor patch
                             do j_f = 1, n_face
                                 upwind_flux(j_f) = ang_flux(PD%upwind_idx(j_f,f,pp), mm, g)
                             end do
                         else if (PD%face_connectivity(4,f,pp) > 0 .and. &
                                  any(PD%face_connectivity(4,f,pp) == ref_ID)) then
-                            ! Reflective BC — read from snapshot to avoid OMP race
                             m_ref = PD%reflect_map(mm, f, pp)
                             do j_f = 1, n_face
                                 local_dof = idx_start - 1 + PD%face_node_map_patch(j_f, f)
                                 upwind_flux(j_f) = ang_flux_snap(local_dof, m_ref, g)
                             end do
                         else
-                            cycle  ! vacuum: zero upwind flux, no contribution
+                            cycle
                         end if
-                        ! face_mass_in is zero for outflow spans, so this is always safe
                         do j_f = 1, n_face
                             b = b - upwind_flux(j_f) * &
                                     PD%face_mass_in(:, PD%face_node_map_patch(j_f,f), f, pp, mm)
@@ -155,7 +154,7 @@ contains
         real(dp),              intent(in)    :: k_eff
         type(t_material),      intent(in)    :: materials(:)
         type(t_mesh_iga),      intent(in)    :: mesh
-        type(t_patch_dg), intent(in) :: PD
+        type(t_patch_dg),      intent(in)    :: PD
         integer,               intent(in)    :: n_patches, n_groups
         logical,               intent(in)    :: is_adjoint, is_eigenvalue
 
@@ -213,7 +212,7 @@ contains
         real(dp),              intent(in)  :: scalar_flux(:,:)
         type(t_material),      intent(in)  :: materials(:)
         type(t_mesh_iga),      intent(in)  :: mesh
-        type(t_patch_dg), intent(in) :: PD
+        type(t_patch_dg),      intent(in)  :: PD
         integer,               intent(in)  :: n_patches
         logical,               intent(in)  :: is_adjoint
 
@@ -238,16 +237,15 @@ contains
     end subroutine Calculate_Production_Patch_DGFEM
 
     ! ------------------------------------------------------------------
-    ! Map patchwise scalar flux to element (knot-span) DOF layout so the
-    ! existing VTK export routines can be reused.
-    !   flux_patch(pp-1)*nb + pdof, g)  →  elem_flux((ee-1)*nb_elem + a, g)
+    ! Map patchwise scalar flux to element (knot-span) DOF layout.
+    !   flux_patch((pp-1)*nb + pdof, g)  →  elem_flux((ee-1)*nb_elem + a, g)
     ! ------------------------------------------------------------------
     subroutine Remap_Patch_To_Elem_Flux(flux_patch, elem_flux, mesh, FE, PD)
         real(dp),              intent(in)  :: flux_patch(:,:)
         real(dp),              intent(out) :: elem_flux(:,:)
         type(t_mesh_iga),      intent(in)  :: mesh
-        type(t_basis_iga),    intent(in)  :: FE
-        type(t_patch_dg), intent(in) :: PD
+        type(t_basis_iga),     intent(in)  :: FE
+        type(t_patch_dg),      intent(in)  :: PD
 
         integer :: ee, pp, a, pdof, n_groups, g, nb
 
@@ -264,20 +262,65 @@ contains
         end do
     end subroutine Remap_Patch_To_Elem_Flux
 
+    ! ================================================================== !
+    !  Type-bound procedure implementations for t_iga_transport            !
+    ! ================================================================== !
+
+    subroutine iga_build_source(self, src, k_eff, is_eigenvalue, is_adjoint)
+        class(t_iga_transport), intent(inout) :: self
+        real(dp), intent(inout) :: src(:,:)
+        real(dp), intent(in)    :: k_eff
+        logical,  intent(in)    :: is_eigenvalue, is_adjoint
+        call Source_Patch_DGFEM(src, self%scalar_flux, k_eff, self%mats, self%mesh, self%PD, &
+                                 self%n_patches, self%n_groups, is_adjoint, is_eigenvalue)
+    end subroutine iga_build_source
+
+    subroutine iga_do_solve(self, src)
+        class(t_iga_transport), intent(inout) :: self
+        real(dp), intent(in) :: src(:,:)
+        call Transport_Sweep_Patch(self%mesh, self%sn_quad, self%PD, &
+                                    self%ang_flux, self%scalar_flux, src, self%sweep_order, self%ref_ids)
+    end subroutine iga_do_solve
+
+    subroutine iga_compute_prod(self, prod, is_adjoint)
+        class(t_iga_transport), intent(inout) :: self
+        real(dp), intent(out) :: prod
+        logical,  intent(in)  :: is_adjoint
+        call Calculate_Production_Patch_DGFEM(prod, self%scalar_flux, self%mats, self%mesh, self%PD, &
+                                               self%n_patches, is_adjoint)
+    end subroutine iga_compute_prod
+
+    subroutine iga_snapshot_impl(self, k_eff, iter)
+        class(t_iga_transport), intent(inout) :: self
+        real(dp), intent(in) :: k_eff
+        integer,  intent(in) :: iter
+        character(len=32) :: lbl
+        self%snap_count = self%snap_count + 1
+        write(lbl,'(A,I4.4)') "snap", self%snap_count
+        if (.not. self%mesh%DG) then
+            call export_transport_vtk_patchiga(trim(self%snap_dir), trim(self%snap_tag), &
+                self%mesh, self%FE, self%sn_quad, self%scalar_flux, self%PD, self%n_groups, &
+                self%vtk_refine, label=trim(lbl))
+        else
+            call export_transport_vtk_iga(trim(self%snap_dir), trim(self%snap_tag), &
+                self%mesh, self%FE, self%sn_quad, self%scalar_flux, self%n_groups, &
+                self%vtk_refine, label=trim(lbl))
+        end if
+    end subroutine iga_snapshot_impl
+
     ! ==================================================================
-    ! High-level entry.  Wires module state, delegates to PowerIteration.
+    ! High-level entry.  Builds a t_iga_transport object, runs
+    ! PowerIteration, then moves results to the caller's arrays.
     ! ==================================================================
-    subroutine SolveTransport_IGA(mesh, materials, sn_quad, PD, &
-                                        scalar_flux, ang_flux_out, k_eff, &
-                                        sweep_order, ref_ids, max_outer, tol, &
-                                        is_adjoint, is_eigenvalue, &
-                                        FE, snap_dir, snap_tag, vtk_ref)
+    subroutine SolveTransport_IGA(solver, mesh, materials, sn_quad, PD, k_eff, &
+                                   sweep_order, ref_ids, max_outer, tol, &
+                                   is_adjoint, is_eigenvalue, &
+                                   FE, snap_dir, snap_tag, vtk_ref)
+        type(t_iga_transport), intent(out)           :: solver
         type(t_mesh_iga),      intent(in),    target :: mesh
         type(t_material),      intent(in),    target :: materials(:)
         type(t_sn_quadrature), intent(in),    target :: sn_quad
         type(t_patch_dg),      intent(in),    target :: PD
-        real(dp), allocatable, intent(out)           :: scalar_flux(:,:)
-        real(dp), allocatable, intent(out)           :: ang_flux_out(:,:,:)
         real(dp),              intent(out)           :: k_eff
         integer,               intent(in)            :: sweep_order(:,:)
         integer,               intent(in)            :: ref_ids(:)
@@ -290,89 +333,31 @@ contains
 
         integer :: n_dof, n_patches
 
-        n_patches  = size(sweep_order, 1)   ! correct for both FDG (n_elems) and PDG (n_patches)
-        n_dof      = n_patches * PD%n_basis_patch
-        s_n_groups = mesh%n_groups
-        s_n_patches= n_patches
+        n_patches = size(sweep_order, 1)
+        n_dof     = n_patches * PD%n_basis_patch
 
-        s_mesh    => mesh
-        s_sn_quad => sn_quad
-        s_PD      => PD
-        s_mats    => materials
+        solver%mesh      => mesh
+        solver%sn_quad   => sn_quad
+        solver%PD        => PD
+        solver%mats      => materials
+        solver%n_groups   = mesh%n_groups
+        solver%n_patches  = n_patches
 
-        s_have_snap = present(FE) .and. present(snap_dir) .and. present(snap_tag)
-        if (s_have_snap) then
-            s_FE_iga     = FE
-            s_snap_dir   = trim(snap_dir)
-            s_snap_tag   = trim(snap_tag)
-            s_vtk_refine = merge(vtk_ref, 4, present(vtk_ref))
-            s_snap_count = 0
+        solver%have_snap = present(FE) .and. present(snap_dir) .and. present(snap_tag)
+        if (solver%have_snap) then
+            solver%FE         = FE
+            solver%snap_dir   = trim(snap_dir)
+            solver%snap_tag   = trim(snap_tag)
+            solver%vtk_refine = merge(vtk_ref, 4, present(vtk_ref))
+            solver%snap_count = 0
         end if
 
-        if (allocated(s_ang_flux))    deallocate(s_ang_flux)
-        if (allocated(s_sweep_order)) deallocate(s_sweep_order)
-        if (allocated(s_ref_ids))     deallocate(s_ref_ids)
+        allocate(solver%ang_flux(n_dof, sn_quad%n_angles, mesh%n_groups), source=0.0_dp)
+        allocate(solver%sweep_order, source=sweep_order)
+        allocate(solver%ref_ids,     source=ref_ids)
+        allocate(solver%scalar_flux(n_dof, mesh%n_groups), source=1.0_dp)
 
-        allocate(s_ang_flux(n_dof, sn_quad%n_angles, s_n_groups), source=0.0_dp)
-        allocate(s_sweep_order, source=sweep_order)
-        allocate(s_ref_ids,     source=ref_ids)
-        allocate(scalar_flux(n_dof, s_n_groups), source=1.0_dp)
-
-        if (s_have_snap) then
-            call PowerIteration(scalar_flux, k_eff, max_outer, tol, &
-                                 is_eigenvalue, is_adjoint, &
-                                 patch_source, patch_solve, patch_production, &
-                                 snapshot_export=iga_snapshot)
-        else
-            call PowerIteration(scalar_flux, k_eff, max_outer, tol, &
-                                 is_eigenvalue, is_adjoint, &
-                                 patch_source, patch_solve, patch_production)
-        end if
-
-        call move_alloc(s_ang_flux, ang_flux_out)
+        call PowerIteration(solver, k_eff, max_outer, tol, is_eigenvalue, is_adjoint)
     end subroutine SolveTransport_IGA
-
-    ! ---- PowerIteration callbacks ------------------------------------
-
-    subroutine patch_source(src, flux, k_eff, is_eigenvalue, is_adjoint)
-        real(dp), intent(inout) :: src(:,:)
-        real(dp), intent(in)    :: flux(:,:), k_eff
-        logical,  intent(in)    :: is_eigenvalue, is_adjoint
-        call Source_Patch_DGFEM(src, flux, k_eff, s_mats, s_mesh, s_PD, &
-                                 s_n_patches, s_n_groups, is_adjoint, is_eigenvalue)
-    end subroutine patch_source
-
-    subroutine patch_solve(flux, src)
-        real(dp), intent(inout) :: flux(:,:)
-        real(dp), intent(in)    :: src(:,:)
-        call Transport_Sweep_Patch(s_mesh, s_sn_quad, s_PD, &
-                                    s_ang_flux, flux, src, s_sweep_order, s_ref_ids)
-    end subroutine patch_solve
-
-    subroutine patch_production(prod, flux, is_adjoint)
-        real(dp), intent(out) :: prod
-        real(dp), intent(in)  :: flux(:,:)
-        logical,  intent(in)  :: is_adjoint
-        call Calculate_Production_Patch_DGFEM(prod, flux, s_mats, s_mesh, s_PD, &
-                                               s_n_patches, is_adjoint)
-    end subroutine patch_production
-
-    subroutine iga_snapshot(flux, k_eff, iter)
-        real(dp), intent(in) :: flux(:,:)
-        real(dp), intent(in) :: k_eff
-        integer,  intent(in) :: iter
-        character(len=32) :: lbl
-        s_snap_count = s_snap_count + 1
-        write(lbl,'(A,I4.4)') "snap", s_snap_count
-        if (.not. s_mesh%DG) then
-            call export_transport_vtk_patchiga(trim(s_snap_dir), trim(s_snap_tag), &
-                s_mesh, s_FE_iga, s_sn_quad, flux, s_PD, s_n_groups, s_vtk_refine, &
-                label=trim(lbl))
-        else
-            call export_transport_vtk_iga(trim(s_snap_dir), trim(s_snap_tag), &
-                s_mesh, s_FE_iga, s_sn_quad, flux, s_n_groups, s_vtk_refine, &
-                label=trim(lbl))
-        end if
-    end subroutine iga_snapshot
 
 end module m_transport_iga_pdg

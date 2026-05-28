@@ -102,9 +102,15 @@ module m_types
         real(dp), allocatable :: face_mass_z(:,:,:,:)
         real(dp), allocatable :: basis_integrals_vol(:,:) ! (n_basis, n_elems)
 
-        ! Per-element-per-angle LU factors
-        real(dp), allocatable :: local_lu(:,:,:,:,:)      ! (n_basis, n_basis, n_elems, n_angles, n_groups)
-        integer,  allocatable :: local_pivots(:,:,:,:)    ! (n_basis, n_elems, n_angles, n_groups)
+        ! Per-element-per-angle LU factors (indexed by LU class after deduplication)
+        real(dp), allocatable :: local_lu(:,:,:,:,:)      ! (n_basis, n_basis, n_lu|n_elems, n_angles, n_groups)
+        integer,  allocatable :: local_pivots(:,:,:,:)    ! (n_basis, n_lu|n_elems, n_angles, n_groups)
+
+        ! Reference element deduplication (set by identify_and_compact_fem)
+        integer :: n_ref_elems  = 0   ! number of unique geometric classes
+        integer :: n_lu_classes = 0   ! number of unique (geometry × material) classes
+        integer, allocatable :: elem_ref_id(:)  ! (n_elems) → index into compacted geometric arrays
+        integer, allocatable :: elem_lu_id(:)   ! (n_elems) → index into compacted LU arrays
 
     end type t_fem_dg
 

@@ -6,7 +6,11 @@
 ! FEM CG multigroup diffusion solver: element assembly, BC application, and power iteration.
 ! Supports 2D (quad elements) and 3D (hex elements) Lagrange meshes.
 !
+! t_fem_diffusion extends t_solver and owns all solver state (PETSc handles,
+! flux arrays) as components, eliminating module-level save variables.
+!
 ! Public:
+!   t_fem_diffusion        -- concrete solver type
 !   SolveDiffusion_FEM     -- high-level entry: assemble + power iteration
 !   assemble_petsc_fem     -- PETSc matrices (A, F, S, ProdVec, FixedSrc)
 !   apply_bcs_fem          -- Robin (vacuum/albedo) and Dirichlet BCs
@@ -19,40 +23,39 @@ module m_diffusion_fem
     use m_petsc,           only: setup_ksp, petsc_build_sparsity, petsc_create_diff_mats, &
                                   petsc_assemble_diff_mats, petsc_setup_ksp_group, &
                                   petsc_destroy_diff_state
-    use m_power_iteration, only: PowerIteration
+    use m_power_iteration, only: t_solver, PowerIteration
     use m_output_fem,      only: export_diffusion_vtk_fem
     use petscsys
     use petscvec
     use petscmat
     use petscksp
     implicit none
-    public :: SolveDiffusion_FEM
+    public :: t_fem_diffusion, SolveDiffusion_FEM
     public :: assemble_petsc_fem, apply_bcs_fem
 
     ! ------------------------------------------------------------------
-    ! Module-level saved state — set by SolveDiffusion_FEM, read by callbacks.
+    ! Concrete FEM diffusion solver.
+    ! All state previously held in module-level save variables lives here.
     ! ------------------------------------------------------------------
-    type(t_mesh_fem),   pointer, save :: s_d_mesh    => null()
-    type(t_basis_fem), pointer, save :: s_d_FE      => null()
-    type(t_material),   pointer, save :: s_d_mats(:) => null()
-
-    KSP, allocatable, save :: s_d_KSPs(:)
-    Vec, allocatable, save :: s_d_X_petsc(:)
-    Mat, allocatable, save :: s_d_MAT_F(:,:)
-    Mat, allocatable, save :: s_d_MAT_S(:,:)
-    Vec, allocatable, save :: s_d_FixedSrc(:)
-    Vec, save              :: s_d_tmp_b, s_d_tmp_x
-    logical, save          :: s_d_tmp_valid = .false.
-    real(dp), allocatable, save :: s_d_prod_dense(:,:)
-    integer, save :: s_d_n_groups = 0
-    integer, save :: s_d_n_nodes  = 0
-
-    ! Snapshot state
-    logical,            save :: s_d_have_snap  = .false.
-    character(len=256), save :: s_d_snap_dir   = ""
-    character(len=256), save :: s_d_snap_tag   = ""
-    integer,            save :: s_d_vtk_refine = 4
-    integer,            save :: s_d_snap_count = 0
+    type, extends(t_solver) :: t_fem_diffusion
+        type(t_mesh_fem),   pointer :: mesh    => null()
+        type(t_basis_fem),  pointer :: FE      => null()
+        type(t_material),   pointer :: mats(:) => null()
+        KSP, allocatable :: KSPs(:)
+        Vec, allocatable :: X_petsc(:)
+        Mat, allocatable :: MAT_F(:,:), MAT_S(:,:)
+        Vec, allocatable :: FixedSrc(:)
+        Vec  :: tmp_b, tmp_x
+        logical :: tmp_valid = .false.
+        real(dp), allocatable :: prod_dense(:,:)
+        integer :: n_groups = 0
+        integer :: n_nodes  = 0
+    contains
+        procedure :: build_source => fem_diff_build_source
+        procedure :: do_solve     => fem_diff_do_solve
+        procedure :: compute_prod => fem_diff_compute_prod
+        procedure :: snapshot     => fem_diff_snapshot
+    end type t_fem_diffusion
 
 contains
 
@@ -64,7 +67,7 @@ contains
         Mat, allocatable, intent(out) :: A_MAT(:), MAT_F(:,:), MAT_S(:,:)
         Vec, allocatable, intent(out) :: PROD_VEC(:), FixedSrc(:)
         type(t_mesh_fem),   intent(in) :: mesh
-        type(t_basis_fem), intent(in) :: FE
+        type(t_basis_fem),  intent(in) :: FE
         type(t_quadrature), intent(in) :: Quad
         type(t_material),   intent(in) :: mats(:)
         integer,            intent(in) :: n_groups
@@ -96,7 +99,7 @@ contains
                                        A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, count)
         integer,            intent(in)    :: ee, n_groups
         type(t_mesh_fem),   intent(in)    :: mesh
-        type(t_basis_fem), intent(in)    :: FE
+        type(t_basis_fem),  intent(in)    :: FE
         type(t_quadrature), intent(in)    :: Quad
         type(t_material),   intent(in)    :: mats(:)
         logical,            intent(in)    :: is_adjoint
@@ -185,7 +188,7 @@ contains
     ! ------------------------------------------------------------------
     subroutine apply_bcs_fem(mesh, FE, QuadFace, bc_cfg, A)
         type(t_mesh_fem),   intent(in)    :: mesh
-        type(t_basis_fem), intent(in)    :: FE
+        type(t_basis_fem),  intent(in)    :: FE
         type(t_quadrature), intent(in)    :: QuadFace
         type(t_bc_config),  intent(in)    :: bc_cfg
         Mat,                intent(inout) :: A
@@ -227,7 +230,7 @@ contains
     ! ------------------------------------------------------------------
     subroutine fem_robin_petsc(mesh, FE, QuadFace, target_id, alpha, A)
         type(t_mesh_fem),   intent(in)    :: mesh
-        type(t_basis_fem), intent(in)    :: FE
+        type(t_basis_fem),  intent(in)    :: FE
         type(t_quadrature), intent(in)    :: QuadFace
         integer,            intent(in)    :: target_id
         real(dp),           intent(in)    :: alpha
@@ -249,7 +252,6 @@ contains
         beta = 0.5_dp * (1.0_dp - alpha) / (1.0_dp + alpha)
         nf   = FE%n_nodes_per_face
 
-        ! Build per-node bc_id lookup (last surface wins if shared, which shouldn't happen)
         allocate(node_bc_id(mesh%n_nodes)); node_bc_id = 0
         do s = 1, size(mesh%surfaces)
             do k = 1, size(mesh%surfaces(s)%cp_ids)
@@ -259,15 +261,12 @@ contains
 
         do ee = 1, mesh%n_elems
             do f = 1, mesh%n_faces_per_elem
-                ! Collect global node IDs for this face
                 do k = 1, nf
                     face_global(k) = mesh%elems(ee, FE%face_node_map(k,f))
                 end do
 
-                ! Skip if not all face nodes belong to the target BC surface
                 if (.not. all(node_bc_id(face_global) == target_id)) cycle
 
-                ! Physical coordinates of face nodes
                 do k = 1, nf
                     x_face(k,:) = mesh%nodes(face_global(k),:)
                 end do
@@ -276,7 +275,6 @@ contains
                 idx   = face_global - 1
 
                 if (mesh%dim == 2) then
-                    ! 1D edge integral
                     do q = 1, QuadFace%n_points
                         N_face  = FE%basis_at_face_quad(q,:)
                         dN_dxi  = FE%dbasis_face_dxi(q,:)
@@ -291,7 +289,6 @@ contains
                         end do
                     end do
                 else
-                    ! 2D face integral (3D mesh)
                     do q = 1, QuadFace%n_points
                         N_face  = FE%basis_at_face_quad(q,:)
                         dN_dxi  = FE%dbasis_face_dxi(q,:)
@@ -322,15 +319,96 @@ contains
         deallocate(node_bc_id)
     end subroutine fem_robin_petsc
 
+    ! ================================================================== !
+    !  Type-bound procedure implementations for t_fem_diffusion            !
+    ! ================================================================== !
+
+    subroutine fem_diff_build_source(self, src, k_eff, is_eigenvalue, is_adjoint)
+        class(t_fem_diffusion), intent(inout) :: self
+        real(dp), intent(inout) :: src(:,:)
+        real(dp), intent(in)    :: k_eff
+        logical,  intent(in)    :: is_eigenvalue, is_adjoint
+        integer        :: g, gp
+        PetscErrorCode :: ierr
+        PetscScalar, pointer :: parr(:)
+        src = 0.0_dp
+        do g = 1, self%n_groups
+            if (.not. is_eigenvalue) then
+                call VecGetArrayRead(self%FixedSrc(g), parr, ierr)
+                src(:,g) = parr(:)
+                call VecRestoreArrayRead(self%FixedSrc(g), parr, ierr)
+            end if
+            do gp = 1, self%n_groups
+                call VecGetArray(self%tmp_x, parr, ierr)
+                parr(:) = self%scalar_flux(:,gp)
+                call VecRestoreArray(self%tmp_x, parr, ierr)
+                if (gp /= g) then
+                    call MatMult(self%MAT_S(g,gp), self%tmp_x, self%tmp_b, ierr)
+                    call VecGetArrayRead(self%tmp_b, parr, ierr)
+                    src(:,g) = src(:,g) + parr(:)
+                    call VecRestoreArrayRead(self%tmp_b, parr, ierr)
+                end if
+                if (is_eigenvalue) then
+                    call MatMult(self%MAT_F(g,gp), self%tmp_x, self%tmp_b, ierr)
+                    call VecGetArrayRead(self%tmp_b, parr, ierr)
+                    src(:,g) = src(:,g) + parr(:) / k_eff
+                    call VecRestoreArrayRead(self%tmp_b, parr, ierr)
+                end if
+            end do
+        end do
+    end subroutine fem_diff_build_source
+
+    subroutine fem_diff_do_solve(self, src)
+        class(t_fem_diffusion), intent(inout) :: self
+        real(dp), intent(in) :: src(:,:)
+        integer        :: g
+        PetscErrorCode :: ierr
+        PetscScalar, pointer :: parr(:)
+        do g = 1, self%n_groups
+            call VecGetArray(self%tmp_b, parr, ierr)
+            parr(:) = src(:,g)
+            call VecRestoreArray(self%tmp_b, parr, ierr)
+            call KSPSolve(self%KSPs(g), self%tmp_b, self%X_petsc(g), ierr)
+            call VecGetArrayRead(self%X_petsc(g), parr, ierr)
+            self%scalar_flux(:,g) = parr(:)
+            call VecRestoreArrayRead(self%X_petsc(g), parr, ierr)
+        end do
+    end subroutine fem_diff_do_solve
+
+    subroutine fem_diff_compute_prod(self, prod, is_adjoint)
+        class(t_fem_diffusion), intent(inout) :: self
+        real(dp), intent(out) :: prod
+        logical,  intent(in)  :: is_adjoint
+        integer :: g
+        prod = 0.0_dp
+        do g = 1, self%n_groups
+            prod = prod + dot_product(self%prod_dense(:,g), self%scalar_flux(:,g))
+        end do
+    end subroutine fem_diff_compute_prod
+
+    subroutine fem_diff_snapshot(self, k_eff, iter)
+        class(t_fem_diffusion), intent(inout) :: self
+        real(dp), intent(in) :: k_eff
+        integer,  intent(in) :: iter
+        character(len=32)  :: lbl
+        character(len=512) :: stag
+        self%snap_count = self%snap_count + 1
+        write(lbl,'(A,I4.4)') "snap", self%snap_count
+        stag = trim(self%snap_tag) // "_" // trim(lbl)
+        call export_diffusion_vtk_fem(trim(self%snap_dir), trim(stag), &
+            self%mesh, self%FE, self%scalar_flux, self%n_groups, self%vtk_refine)
+    end subroutine fem_diff_snapshot
+
     ! ==================================================================
     ! High-level entry point.
     ! ==================================================================
-    subroutine SolveDiffusion_FEM(mesh, FE, Quad, QuadFace, mats,   &
+    subroutine SolveDiffusion_FEM(solver, mesh, FE, Quad, QuadFace, mats,   &
                                    solver_type, preconditioner, ref_ids, &
                                    max_outer, tol, is_eigenvalue, is_adjoint, &
-                                   phi_out, k_eff_out, snap_dir, snap_tag, vtk_ref)
+                                   k_eff_out, snap_dir, snap_tag, vtk_ref)
+        type(t_fem_diffusion), intent(out)     :: solver
         type(t_mesh_fem),   intent(in), target :: mesh
-        type(t_basis_fem), intent(in), target :: FE
+        type(t_basis_fem),  intent(in), target :: FE
         type(t_quadrature), intent(in)         :: Quad, QuadFace
         type(t_material),   intent(in), target :: mats(:)
         integer,            intent(in)         :: solver_type, preconditioner
@@ -338,7 +416,6 @@ contains
         integer,            intent(in)         :: max_outer
         real(dp),           intent(in)         :: tol
         logical,            intent(in)         :: is_eigenvalue, is_adjoint
-        real(dp), allocatable, intent(out)     :: phi_out(:,:)
         real(dp),              intent(out)     :: k_eff_out
         character(len=*), optional, intent(in) :: snap_dir, snap_tag
         integer,          optional, intent(in) :: vtk_ref
@@ -350,22 +427,20 @@ contains
         Mat, allocatable :: loc_A(:), loc_MF(:,:), loc_MS(:,:)
         Vec, allocatable :: loc_PV(:), loc_FS(:)
 
-        s_d_mesh     => mesh
-        s_d_FE       => FE
-        s_d_mats     => mats
-        s_d_n_groups = mesh%n_groups
-        s_d_n_nodes  = mesh%n_nodes
+        solver%mesh      => mesh
+        solver%FE        => FE
+        solver%mats      => mats
+        solver%n_groups   = mesh%n_groups
+        solver%n_nodes    = mesh%n_nodes
+        solver%tmp_valid  = .false.
 
-        s_d_have_snap = present(snap_dir) .and. present(snap_tag)
-        if (s_d_have_snap) then
-            s_d_snap_dir   = trim(snap_dir)
-            s_d_snap_tag   = trim(snap_tag)
-            s_d_vtk_refine = merge(vtk_ref, 4, present(vtk_ref))
-            s_d_snap_count = 0
+        solver%have_snap = present(snap_dir) .and. present(snap_tag)
+        if (solver%have_snap) then
+            solver%snap_dir   = trim(snap_dir)
+            solver%snap_tag   = trim(snap_tag)
+            solver%vtk_refine = merge(vtk_ref, 4, present(vtk_ref))
+            solver%snap_count = 0
         end if
-
-        call petsc_destroy_diff_state(s_d_KSPs, s_d_X_petsc, s_d_MAT_F, s_d_MAT_S, &
-                                       s_d_FixedSrc, s_d_tmp_b, s_d_tmp_x, s_d_tmp_valid)
 
         call assemble_petsc_fem(loc_A, loc_MF, loc_MS, loc_PV, loc_FS, &
                                  mesh, FE, Quad, mats, mesh%n_groups, is_adjoint)
@@ -380,116 +455,46 @@ contains
         end do
         deallocate(uniq_bc_ids)
 
-        allocate(s_d_MAT_F(mesh%n_groups, mesh%n_groups), &
-                 s_d_MAT_S(mesh%n_groups, mesh%n_groups), &
-                 s_d_FixedSrc(mesh%n_groups))
-        s_d_MAT_F    = loc_MF
-        s_d_MAT_S    = loc_MS
-        s_d_FixedSrc = loc_FS
+        allocate(solver%MAT_F(mesh%n_groups, mesh%n_groups), &
+                 solver%MAT_S(mesh%n_groups, mesh%n_groups), &
+                 solver%FixedSrc(mesh%n_groups))
+        solver%MAT_F    = loc_MF
+        solver%MAT_S    = loc_MS
+        solver%FixedSrc = loc_FS
         deallocate(loc_MF, loc_MS, loc_FS)
 
         call petsc_setup_ksp_group(loc_A, mesh%n_nodes, mesh%n_groups, &
-                                    solver_type, preconditioner, s_d_KSPs, s_d_X_petsc)
+                                    solver_type, preconditioner, solver%KSPs, solver%X_petsc)
         deallocate(loc_A)
 
-        call extract_prod_dense_fem(loc_PV, mesh%n_groups, mesh%n_nodes)
+        call extract_prod_dense_fem(loc_PV, mesh%n_groups, mesh%n_nodes, solver%prod_dense)
         do g = 1, mesh%n_groups; call VecDestroy(loc_PV(g), ierr); end do
         deallocate(loc_PV)
 
-        call VecCreateSeq(PETSC_COMM_SELF, mesh%n_nodes, s_d_tmp_b, ierr)
-        call VecCreateSeq(PETSC_COMM_SELF, mesh%n_nodes, s_d_tmp_x, ierr)
-        s_d_tmp_valid = .true.
+        call VecCreateSeq(PETSC_COMM_SELF, mesh%n_nodes, solver%tmp_b, ierr)
+        call VecCreateSeq(PETSC_COMM_SELF, mesh%n_nodes, solver%tmp_x, ierr)
+        solver%tmp_valid = .true.
 
-        allocate(phi_out(mesh%n_nodes, mesh%n_groups), source=1.0_dp)
+        allocate(solver%scalar_flux(mesh%n_nodes, mesh%n_groups), source=1.0_dp)
 
-        if (s_d_have_snap) then
-            call PowerIteration(phi_out, k_eff_out, max_outer, tol, &
-                                 is_eigenvalue, is_adjoint, &
-                                 diffusion_source_fem, diffusion_solve_fem, diffusion_production_fem, &
-                                 snapshot_export=diff_fem_snapshot)
-        else
-            call PowerIteration(phi_out, k_eff_out, max_outer, tol, &
-                                 is_eigenvalue, is_adjoint, &
-                                 diffusion_source_fem, diffusion_solve_fem, diffusion_production_fem)
-        end if
+        call PowerIteration(solver, k_eff_out, max_outer, tol, is_eigenvalue, is_adjoint)
+
+        call petsc_destroy_diff_state(solver%KSPs, solver%X_petsc, solver%MAT_F, solver%MAT_S, &
+                                       solver%FixedSrc, solver%tmp_b, solver%tmp_x, solver%tmp_valid)
     end subroutine SolveDiffusion_FEM
 
-    subroutine diffusion_source_fem(src, flux, k_eff, is_eigenvalue, is_adjoint)
-        real(dp), intent(inout) :: src(:,:)
-        real(dp), intent(in)    :: flux(:,:), k_eff
-        logical,  intent(in)    :: is_eigenvalue, is_adjoint
-        integer        :: g, gp
-        PetscErrorCode :: ierr
-        PetscScalar, pointer :: parr(:)
-        src = 0.0_dp
-        do g = 1, s_d_n_groups
-            if (.not. is_eigenvalue) then
-                call VecGetArrayRead(s_d_FixedSrc(g), parr, ierr)
-                src(:,g) = parr(:)
-                call VecRestoreArrayRead(s_d_FixedSrc(g), parr, ierr)
-            end if
-            do gp = 1, s_d_n_groups
-                call VecGetArray(s_d_tmp_x, parr, ierr)
-                parr(:) = flux(:,gp)
-                call VecRestoreArray(s_d_tmp_x, parr, ierr)
-                if (gp /= g) then
-                    call MatMult(s_d_MAT_S(g,gp), s_d_tmp_x, s_d_tmp_b, ierr)
-                    call VecGetArrayRead(s_d_tmp_b, parr, ierr)
-                    src(:,g) = src(:,g) + parr(:)
-                    call VecRestoreArrayRead(s_d_tmp_b, parr, ierr)
-                end if
-                if (is_eigenvalue) then
-                    call MatMult(s_d_MAT_F(g,gp), s_d_tmp_x, s_d_tmp_b, ierr)
-                    call VecGetArrayRead(s_d_tmp_b, parr, ierr)
-                    src(:,g) = src(:,g) + parr(:) / k_eff
-                    call VecRestoreArrayRead(s_d_tmp_b, parr, ierr)
-                end if
-            end do
-        end do
-    end subroutine diffusion_source_fem
-
-    subroutine diffusion_solve_fem(flux, src)
-        real(dp), intent(inout) :: flux(:,:)
-        real(dp), intent(in)    :: src(:,:)
-        integer        :: g
-        PetscErrorCode :: ierr
-        PetscScalar, pointer :: parr(:)
-
-        do g = 1, s_d_n_groups
-            call VecGetArray(s_d_tmp_b, parr, ierr)
-            parr(:) = src(:,g)
-            call VecRestoreArray(s_d_tmp_b, parr, ierr)
-            call KSPSolve(s_d_KSPs(g), s_d_tmp_b, s_d_X_petsc(g), ierr)
-            call VecGetArrayRead(s_d_X_petsc(g), parr, ierr)
-            flux(:,g) = parr(:)
-            call VecRestoreArrayRead(s_d_X_petsc(g), parr, ierr)
-        end do
-    end subroutine diffusion_solve_fem
-
-    subroutine diffusion_production_fem(prod, flux, is_adjoint)
-        real(dp), intent(out) :: prod
-        real(dp), intent(in)  :: flux(:,:)
-        logical,  intent(in)  :: is_adjoint
-        integer :: g
-
-        prod = 0.0_dp
-        do g = 1, s_d_n_groups
-            prod = prod + dot_product(s_d_prod_dense(:,g), flux(:,g))
-        end do
-    end subroutine diffusion_production_fem
-
-    subroutine extract_prod_dense_fem(prod_vecs, n_groups, n_nodes)
-        Vec,     intent(in) :: prod_vecs(:)
-        integer, intent(in) :: n_groups, n_nodes
+    subroutine extract_prod_dense_fem(prod_vecs, n_groups, n_nodes, prod_dense_out)
+        Vec,     intent(in)  :: prod_vecs(:)
+        integer, intent(in)  :: n_groups, n_nodes
+        real(dp), allocatable, intent(out) :: prod_dense_out(:,:)
         integer :: g
         PetscErrorCode :: ierr
         PetscScalar, pointer :: parr(:)
 
-        if (allocated(s_d_prod_dense)) deallocate(s_d_prod_dense)
-        allocate(s_d_prod_dense(n_nodes, n_groups))
+        allocate(prod_dense_out(n_nodes, n_groups))
         do g = 1, n_groups
             call VecGetArrayRead(prod_vecs(g), parr, ierr)
-            s_d_prod_dense(:,g) = parr(:)
+            prod_dense_out(:,g) = parr(:)
             call VecRestoreArrayRead(prod_vecs(g), parr, ierr)
         end do
     end subroutine extract_prod_dense_fem
@@ -517,18 +522,5 @@ contains
             end if
         end do
     end subroutine collect_vacuum_ids_fem
-
-    subroutine diff_fem_snapshot(flux, k_eff, iter)
-        real(dp), intent(in) :: flux(:,:)
-        real(dp), intent(in) :: k_eff
-        integer,  intent(in) :: iter
-        character(len=32)  :: lbl
-        character(len=512) :: stag
-        s_d_snap_count = s_d_snap_count + 1
-        write(lbl,'(A,I4.4)') "snap", s_d_snap_count
-        stag = trim(s_d_snap_tag) // "_" // trim(lbl)
-        call export_diffusion_vtk_fem(trim(s_d_snap_dir), trim(stag), &
-            s_d_mesh, s_d_FE, flux, s_d_n_groups, s_d_vtk_refine)
-    end subroutine diff_fem_snapshot
 
 end module m_diffusion_fem

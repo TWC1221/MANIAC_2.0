@@ -4,7 +4,7 @@
     solver         = "transport"
 
     ! Mesh and material files (paths relative to the executable location)
-    mesh_file      = "input/c5g7_test.asmg"
+    mesh_file      = "input/c5g7_2005.asmg"
     mat_file       = "input/MATS.txt"
     output_dir     = "output"
 
@@ -17,7 +17,7 @@
     tol            = 1.0e-5
 
     ! Transport: SN order (2, 4, 6, 8, 10, 12, ...)
-    sn_order       = 16
+    sn_order       = 2
 
     ! Reflective boundary IDs (from ASMG $1D/$2D patches).
     ! List the bc_id values that should be treated as reflective.
@@ -36,6 +36,6 @@
     preconditioner = 4
 
     ! VTK output refinement level (sub-cells per knot span per direction)
-    vtk_refine     = 10
-    ang_out        = .true.
+    vtk_refine     = 4
+    ang_out        = .false.
 /

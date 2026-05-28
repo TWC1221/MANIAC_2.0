@@ -1,87 +1,89 @@
 ! Shared outer power-iteration driver for eigenvalue and fixed-source problems.
 !
-! Physics modules (transport, diffusion) supply three callback procedures that
-! conform to the abstract interfaces defined here:
-!   build_source  -- construct the distributed source from the current flux
-!   do_solve      -- advance the flux by one linear solve / sweep
-!   compute_prod  -- evaluate total fission production (for k-eff update)
+! All physics backends extend t_solver and implement three deferred TBPs.
+! The solver owns its flux (scalar_flux component); no flux array is threaded
+! through the callback chain.
 !
-! The outer loop is identical for transport and diffusion, for IGA and FEM.
+!   build_source(self, src, k_eff, is_eigenvalue, is_adjoint)
+!       reads  self%scalar_flux → writes src
+!   do_solve(self, src)
+!       reads  src              → writes self%scalar_flux (+ self%ang_flux for transport)
+!   compute_prod(self, prod, is_adjoint)
+!       reads  self%scalar_flux → writes prod
 !
-! Public: PowerIteration
+! On-demand VTK snapshots are triggered by a "SNAPSHOT" file in the run
+! directory.  Override snapshot() in the concrete type and set have_snap=.true.
+!
+! Public: PowerIteration, t_solver
 module m_power_iteration
     use m_constants
     implicit none
-    public :: PowerIteration
+    public :: PowerIteration, t_solver
 
     ! ------------------------------------------------------------------
-    ! Abstract interfaces for the three physics callbacks.
+    ! Abstract solver base — all physics backends extend this.
     ! ------------------------------------------------------------------
+    type, abstract :: t_solver
+        real(dp), allocatable :: scalar_flux(:,:)   ! (n_dof, n_groups) — owned by solver
+        logical            :: have_snap  = .false.
+        character(len=256) :: snap_dir   = ""
+        character(len=256) :: snap_tag   = ""
+        integer            :: vtk_refine = 4
+        integer            :: snap_count = 0
+    contains
+        procedure(i_build_source), deferred :: build_source
+        procedure(i_do_solve),     deferred :: do_solve
+        procedure(i_compute_prod), deferred :: compute_prod
+        procedure :: snapshot => noop_snapshot
+    end type t_solver
+
     abstract interface
-
-        ! Build the distributed source for all groups from the current flux.
-        ! For transport : wraps Source_DGFEM
-        ! For diffusion : assembles scatter + fission RHS via CSR matvec
-        subroutine source_fn(src, flux, k_eff, is_eigenvalue, is_adjoint)
-            import :: dp
-            real(dp), intent(inout) :: src(:,:)          ! (n_dof, n_groups) output
-            real(dp), intent(in)    :: flux(:,:)         ! (n_dof, n_groups) current flux
+        ! Build total source from self%scalar_flux into src.
+        subroutine i_build_source(self, src, k_eff, is_eigenvalue, is_adjoint)
+            import :: t_solver, dp
+            class(t_solver), intent(inout) :: self
+            real(dp), intent(inout) :: src(:,:)
             real(dp), intent(in)    :: k_eff
             logical,  intent(in)    :: is_eigenvalue, is_adjoint
-        end subroutine source_fn
+        end subroutine i_build_source
 
-        ! Advance the flux by one step (sweep or linear solve).
-        ! For transport : wraps Transport_Sweep  (rewrites flux from scratch)
-        ! For diffusion : solves A x = src group by group (PCG or PETSc KSP)
-        subroutine solve_fn(flux, src)
-            import :: dp
-            real(dp), intent(inout) :: flux(:,:)         ! in: initial guess / out: new flux
-            real(dp), intent(in)    :: src(:,:)
-        end subroutine solve_fn
+        ! Advance self%scalar_flux by one sweep / linear solve using src.
+        subroutine i_do_solve(self, src)
+            import :: t_solver, dp
+            class(t_solver), intent(inout) :: self
+            real(dp), intent(in) :: src(:,:)
+        end subroutine i_do_solve
 
-        ! Compute total fission production  P = sum_g integral(nuSigF_g * phi_g dV).
-        ! Used to update k-eff between outer iterations.
-        subroutine production_fn(prod, flux, is_adjoint)
-            import :: dp
+        ! Integrate fission production from self%scalar_flux into prod.
+        subroutine i_compute_prod(self, prod, is_adjoint)
+            import :: t_solver, dp
+            class(t_solver), intent(inout) :: self
             real(dp), intent(out) :: prod
-            real(dp), intent(in)  :: flux(:,:)
             logical,  intent(in)  :: is_adjoint
-        end subroutine production_fn
-
-        ! Optional on-demand snapshot: called when SNAPSHOT trigger file is detected.
-        ! Caller exports the current flux to VTK and returns; iteration continues.
-        subroutine snapshot_fn(flux, k_eff, iter)
-            import :: dp
-            real(dp), intent(in) :: flux(:,:)
-            real(dp), intent(in) :: k_eff
-            integer,  intent(in) :: iter
-        end subroutine snapshot_fn
-
+        end subroutine i_compute_prod
     end interface
 
 contains
 
+    subroutine noop_snapshot(self, k_eff, iter)
+        class(t_solver), intent(inout) :: self
+        real(dp), intent(in) :: k_eff
+        integer,  intent(in) :: iter
+    end subroutine noop_snapshot
+
     ! ------------------------------------------------------------------
-    ! Shared outer power-iteration loop.
+    ! Outer power-iteration loop.
     !
-    ! flux        -- (n_dof, n_groups) initial guess on entry, converged
-    !                solution on exit; caller allocates and initialises.
-    ! k_eff       -- eigenvalue (always 1 for fixed-source problems).
-    ! build_source, do_solve, compute_prod -- physics callbacks.
+    ! solver%scalar_flux  -- initial guess on entry, converged solution on exit;
+    !                        caller allocates and initialises before calling.
+    ! k_eff               -- eigenvalue (always 1 for fixed-source problems).
     ! ------------------------------------------------------------------
-    subroutine PowerIteration(flux, k_eff, max_outer, tol, &
-                               is_eigenvalue, is_adjoint,   &
-                               build_source, do_solve, compute_prod, &
-                               snapshot_export)
-        real(dp), intent(inout)           :: flux(:,:)
-        real(dp), intent(out)             :: k_eff
-        integer,  intent(in)              :: max_outer
-        real(dp), intent(in)              :: tol
-        logical,  intent(in)              :: is_eigenvalue, is_adjoint
-        procedure(source_fn)              :: build_source
-        procedure(solve_fn)               :: do_solve
-        procedure(production_fn)          :: compute_prod
-        procedure(snapshot_fn), optional  :: snapshot_export
+    subroutine PowerIteration(solver, k_eff, max_outer, tol, is_eigenvalue, is_adjoint)
+        class(t_solver), intent(inout) :: solver
+        real(dp), intent(out)          :: k_eff
+        integer,  intent(in)           :: max_outer
+        real(dp), intent(in)           :: tol
+        logical,  intent(in)           :: is_eigenvalue, is_adjoint
 
         real(dp), allocatable :: src(:,:), flux_old(:,:)
         real(dp) :: prod_new, prod_old, k_eff_old, err_phi, err_k, norm_phi, norm_old
@@ -89,12 +91,12 @@ contains
         logical  :: snap_exists
         integer, parameter :: PRINT_STRIDE_EIG = 10, PRINT_STRIDE_FS = 5
 
-        allocate(src    (size(flux,1), size(flux,2)), source=0.0_dp)
-        allocate(flux_old(size(flux,1), size(flux,2)))
+        allocate(src    (size(solver%scalar_flux,1), size(solver%scalar_flux,2)), source=0.0_dp)
+        allocate(flux_old(size(solver%scalar_flux,1), size(solver%scalar_flux,2)))
 
         k_eff    = 1.0_dp
         norm_old = 0.0_dp
-        call compute_prod(prod_old, flux, is_adjoint)
+        call solver%compute_prod(prod_old, is_adjoint)
         prod_old = max(prod_old, 1.0e-20_dp)
 
         write(*,*)
@@ -111,20 +113,21 @@ contains
         write(*,'(A)') " |-----------------------------------------------------------------------|"
 
         do outer = 1, max_outer
-            flux_old  = flux
+            flux_old  = solver%scalar_flux
             k_eff_old = k_eff
 
-            call build_source(src, flux, k_eff, is_eigenvalue, is_adjoint)
-            call do_solve(flux, src)
+            call solver%build_source(src, k_eff, is_eigenvalue, is_adjoint)
+            call solver%do_solve(src)
 
             if (is_eigenvalue) then
-                call compute_prod(prod_new, flux, is_adjoint)
+                call solver%compute_prod(prod_new, is_adjoint)
                 k_eff    = k_eff_old * prod_new / max(prod_old, 1.0e-20_dp)
                 prod_old = prod_new
             end if
 
-            norm_phi = maxval(abs(flux))
-            err_phi  = merge(maxval(abs(flux - flux_old)) / norm_phi, 0.0_dp, norm_phi > 0.0_dp)
+            norm_phi = maxval(abs(solver%scalar_flux))
+            err_phi  = merge(maxval(abs(solver%scalar_flux - flux_old)) / norm_phi, &
+                             0.0_dp, norm_phi > 0.0_dp)
             err_k    = abs(k_eff - k_eff_old)
 
             if (is_eigenvalue) then
@@ -133,7 +136,6 @@ contains
             else
                 if (mod(outer, PRINT_STRIDE_FS) == 0 .or. outer == 1) &
                     write(*,'(A, I5, 2X, ES15.6, 2X, ES15.6, T74, A)') " |  ", outer, err_phi, norm_phi, "|"
-                ! Divergence guard: warn if flux has doubled since last print stride
                 if (norm_old > 0.0_dp .and. norm_phi > 10.0_dp * norm_old) then
                     write(*,'(A)') " |-----------------------------------------------------------------------|"
                     write(*,'(A)') " |  WARNING: Flux is growing - problem may be super-critical.            |"
@@ -149,11 +151,11 @@ contains
             ! ---- On-demand VTK snapshot trigger --------------------------------
             inquire(file="SNAPSHOT", exist=snap_exists)
             if (snap_exists) then
-                if (present(snapshot_export)) then
+                if (solver%have_snap) then
                     write(*,'(A)') " |-----------------------------------------------------------------------|"
                     write(*,'(A, I5, A, F12.8, T74, A)') &
                         " |  [SNAP] iter", outer, "  k_eff = ", k_eff, "|"
-                    call snapshot_export(flux, k_eff, outer)
+                    call solver%snapshot(k_eff, outer)
                 end if
                 open(newunit=u_snap, file="SNAPSHOT")
                 close(u_snap, status='delete')
